@@ -12,6 +12,5 @@
   "inputType": "MZN",
   "supportsMzn": true,
   "supportsFzn": false,
-  "supportsNL": false,
-  "needsMznExecutable": true,
+  "needsMznExecutable": true
 }
