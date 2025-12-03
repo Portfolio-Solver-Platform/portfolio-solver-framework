@@ -1,5 +1,6 @@
 use crate::input::{Args, OutputMode};
 use crate::solver_output;
+use std::borrow::Borrow;
 use std::fmt::format;
 use std::io;
 use std::process::Command;
@@ -43,7 +44,7 @@ pub fn run(solver: &str, args: &Args) -> io::Result<()> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         println!("Solver Output:\n{}", stdout);
 
-        let parsed_output = solver_output::Output::parse(stdout);
+        let parsed_output = solver_output::Output::parse(stdout.borrow());
 
         // Optional: Parse the output here.
         // Tip: Use the JSON output flag (--json-stream) for easier parsing in Rust!
