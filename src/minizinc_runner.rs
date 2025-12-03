@@ -1,11 +1,13 @@
 use crate::input::{Args, OutputMode};
-use crate::solver_output;
+use crate::solver_output::{Output, OutputKind};
 use command_group::{CommandGroup, Signal};
 use std::borrow::Borrow;
 use std::io;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
+
 pub fn run(args: &Args, solver: &str, num_cores: usize, time_limit: f32) -> io::Result<()> {
     let mut cmd = Command::new("minizinc");
     cmd.arg("--solver").arg(solver);
@@ -42,28 +44,32 @@ pub fn run(args: &Args, solver: &str, num_cores: usize, time_limit: f32) -> io::
         .take()
         .expect("Failed to capture stdout");
 
+    let (tx, rx) = mpsc::channel::<Output>();
+
     let reader_handler = thread::spawn(move || {
         let reader = BufReader::new(stdout);
 
         for line in reader.lines() {
             match line {
                 Ok(l) => {
-                    let parsed_output = solver_output::Output::parse(l.borrow());
+                    let output = Output::parse(l.borrow());
+                    tx.send(output).unwrap();
                 }
                 Err(e) => eprintln!("Error reading line: {}", e),
             }
         }
     });
 
-    // if output.status.success() {
-    //     let stdout = String::from_utf8_lossy(&output.stdout);
-    //     println!("Solver Output:\n{}", stdout);
-
-    //     let parsed_output = solver_output::Output::parse(stdout.borrow());
-    // } else {
-    //     let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stderr);
-    //     eprintln!("Error running solver:\n{}", stderr);
-    // }
+    // let mut msg;
+    for msg in rx {
+        if msg.kind == OutputKind::Optimal {
+            println!("OPTIMAL: {}", msg.original_output);
+            return Ok(());
+        } else {
+            println!("NOT OPTIMAL: {}", msg.original_output);
+        }
+    }
+    // println!("OPTIMAL: {}", msg.original_output);
 
     Ok(())
 }
