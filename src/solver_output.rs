@@ -184,17 +184,4 @@ mod tests {
         };
         assert_eq!(status, Status::OptimalSolution);
     }
-
-    // #[test]
-    // fn test_arithmetic_target_output_parsing() {
-    //     let s = ARITHEMETIC_TARGET_OUTPUT;
-    //     let output = Output::parse(s);
-    //     assert_eq!(output.kind, OutputKind::Unknown);
-    //     assert_eq!(output.original_output, s);
-
-    //     let solutions: Vec<_> = output.solutions().collect();
-    //     assert_eq!(solutions.len(), 5);
-    //     let solution = solutions.first().unwrap();
-    //     assert_eq!(solution.objective, Some(125));
-    // }
 }
