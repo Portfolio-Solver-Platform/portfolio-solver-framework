@@ -74,8 +74,9 @@ impl Output {
 
 fn parse_solution(json: &Map<String, Value>) -> Result<Solution, ParseError> {
     let output = parse_object_field(&json, "output")?;
-    let solution = parse_string_field(&json, "default")?;
-    let objective = parse_i64_field(&json, "_objective")?;
+    let solution = parse_string_field(output, "default")?;
+    let output_json = parse_object_field(output, "json")?;
+    let objective = parse_i64_field(output_json, "_objective")?;
 
     Ok(Solution {
         solution: solution.clone(),
@@ -147,15 +148,42 @@ fn parse_object_field<'a>(
 mod tests {
     use super::*;
 
-    const ARITHEMETIC_TARGET_SOLUTION: &str = r#"{"type": "solution", "output": {"default": "yCoor = [29, 1, 8, 6, 31, 15, 11, 6, 6, 1, 42, 11, 40, 26, 37, 16, 16, 43, 21, 33];\nS = [22, 41, 29];\nD = 45;\nobjective = 137;\n", "raw": "yCoor = [29, 1, 8, 6, 31, 15, 11, 6, 6, 1, 42, 11, 40, 26, 37, 16, 16, 43, 21, 33];\nS = [22, 41, 29];\nD = 45;\nobjective = 137;\n", "json": {  "yCoor" : [29, 1, 8, 6, 31, 15, 11, 6, 6, 1, 42, 11, 40, 26, 37, 16, 16, 43, 21, 33],  "objective" : 137,  "S" : [22, 41, 29],  "D" : 45,  "_objective" : 137}}, "sections": ["default", "raw", "json"]}"#;
-    const ARITHMETIC_TARGET_STATUS: &str = r#"{"type": "status", "status": "UNKNOWN"}"#
+    const ARITHMETIC_TARGET_SOLUTION: &str = r#"{"type": "solution", "output": {"default": "yCoor = [29, 1, 8, 6, 31, 15, 11, 6, 6, 1, 42, 11, 40, 26, 37, 16, 16, 43, 21, 33];\nS = [22, 41, 29];\nD = 45;\nobjective = 137;\n", "raw": "yCoor = [29, 1, 8, 6, 31, 15, 11, 6, 6, 1, 42, 11, 40, 26, 37, 16, 16, 43, 21, 33];\nS = [22, 41, 29];\nD = 45;\nobjective = 137;\n", "json": {  "yCoor" : [29, 1, 8, 6, 31, 15, 11, 6, 6, 1, 42, 11, 40, 26, 37, 16, 16, 43, 21, 33],  "objective" : 137,  "S" : [22, 41, 29],  "D" : 45,  "_objective" : 137}}, "sections": ["default", "raw", "json"]}"#;
+    const ARITHMETIC_TARGET_SOLUTION_DZN: &str = "yCoor = [29, 1, 8, 6, 31, 15, 11, 6, 6, 1, 42, 11, 40, 26, 37, 16, 16, 43, 21, 33];\nS = [22, 41, 29];\nD = 45;\nobjective = 137;\n";
+    const ARITHMETIC_TARGET_STATUS: &str = r#"{"type": "status", "status": "UNKNOWN"}"#;
 
-    // #[test]
-    // fn test_parse_solution() {
-    //     let input = ARITHEMETIC_TARGET_SOLUTION;
-    //     let num = get_first_number("hel 654; uhte\nueou");
-    //     assert_eq!(num, Some("654".to_owned()))
-    // }
+    const NFC_STATUS: &str = r#"{"type": "status", "status": "OPTIMAL_SOLUTION"}"#;
+
+    #[test]
+    fn test_parse_solution() {
+        let input = ARITHMETIC_TARGET_SOLUTION;
+        let output = Output::parse(input).unwrap();
+        let Output::Solution(solution) = output else {
+            panic!("Output is not a solution");
+        };
+        assert_eq!(solution.objective, 137);
+        assert_eq!(solution.solution, ARITHMETIC_TARGET_SOLUTION_DZN);
+    }
+
+    #[test]
+    fn test_parse_unknown_status() {
+        let input = ARITHMETIC_TARGET_STATUS;
+        let output = Output::parse(input).unwrap();
+        let Output::Status(status) = output else {
+            panic!("Output is not a status");
+        };
+        assert_eq!(status, Status::Unknown);
+    }
+
+    #[test]
+    fn test_parse_optimal_status() {
+        let input = NFC_STATUS;
+        let output = Output::parse(input).unwrap();
+        let Output::Status(status) = output else {
+            panic!("Output is not a status");
+        };
+        assert_eq!(status, Status::OptimalSolution);
+    }
 
     // #[test]
     // fn test_arithmetic_target_output_parsing() {
