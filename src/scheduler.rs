@@ -1,29 +1,24 @@
-#![allow(warnings)]
-
-use crate::input::{Args, OutputMode};
-use crate::solver_output::{Output, Solution};
-use command_group::{CommandGroup, GroupChild};
+use crate::input::Args;
 use futures::future::join_all;
 use kill_tree;
-use std::collections::HashMap;
-use std::fmt;
-use std::io;
-use std::io::{BufRead, BufReader};
-use std::os::unix::process;
-use std::process::{ChildStderr, ChildStdout};
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread;
-
+use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::process::Stdio;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 pub struct ScheduleElement {
     pub solver: String,
+    pub id: usize,
     pub cores: usize,
 }
 
 impl ScheduleElement {
-    pub fn new(solver: String, cores: usize) -> Self {
-        Self { solver, cores }
+    pub fn new(solver: String, cores: usize, id: usize) -> Self {
+        Self { solver, id, cores }
     }
 }
 
@@ -33,8 +28,15 @@ pub type Schedule = Vec<ScheduleElement>;
 pub enum Error {
     KillTree(kill_tree::Error),
     InvalidSolver(String),
+    Io(std::io::Error),
 }
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::Io(e)
+    }
+}
 
 impl From<kill_tree::Error> for Error {
     fn from(value: kill_tree::Error) -> Self {
@@ -52,40 +54,44 @@ impl Msg {
 }
 
 pub struct Scheduler {
-    tx: Sender<Msg>,
-    rx: Receiver<Msg>,
-    running_processes: Arc<Mutex<Vec<GroupChild>>>,
-    solver_to_pid: HashMap<String, u32>,
+    tx: mpsc::UnboundedSender<Msg>,
+    running_pids: Arc<Mutex<HashSet<u32>>>,
+    solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
     args: Args,
 }
 
 impl Scheduler {
     pub fn new(args: Args) -> Self {
-        let (tx, rx) = mpsc::channel::<Msg>();
-        let running_processes: Arc<Mutex<Vec<GroupChild>>> = cleanup_handler();
+        let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+        let running_pids = cleanup_handler();
+        let pids_for_background = running_pids.clone();
+
+        tokio::spawn(async move {
+            let mut receiver = rx;
+
+            while let Some(msg) = receiver.recv().await {
+                println!("{:?}", msg);
+            }
+
+            let pids = pids_for_background.lock().await;
+            for pid in pids.iter() {
+                // kill_tree is async, await it
+                let _ = kill_tree::tokio::kill_tree(*pid).await;
+            }
+            std::process::exit(0);
+        });
 
         Self {
             tx,
-            rx,
-            running_processes,
-            solver_to_pid: HashMap::new(),
+            running_pids,
+            solver_to_pid: Arc::new(Mutex::new(HashMap::new())),
             args,
         }
     }
 
-    pub fn listen_for_results(&self) {
-        for msg in &self.rx {
-            println!("{:?}", msg);
-        }
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let _ = self.stop_all_solvers().await;
-        });
-    }
-
-    fn start_solver(&self, elem: ScheduleElement) -> io::Result<()> {
+    async fn start_solver(&mut self, elem: ScheduleElement) -> std::io::Result<()> {
         let mut cmd = Command::new("minizinc");
-        cmd.arg("--solver").arg(elem.solver);
+        cmd.arg("--solver").arg(&elem.solver);
         cmd.arg(&self.args.model);
 
         if let Some(data_path) = &self.args.data {
@@ -107,139 +113,198 @@ impl Scheduler {
         }
         cmd.arg("-p").arg(elem.cores.to_string());
 
-        let mut group_child = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .group_spawn()?;
+        #[cfg(unix)]
+        cmd.process_group(0); // let os give it a process id
 
-        let stdout = group_child
-            .inner()
-            .stdout
-            .take()
-            .expect("Failed to capture stdout");
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
 
-        let stderr = group_child
-            .inner()
-            .stderr
-            .take()
-            .expect("failed to capture stderr");
-
-        let pid = group_child.id();
-
+        let mut child = cmd.spawn()?;
+        let pid = child.id().expect("Child has no PID");
         {
-            let mut group_childs = self.running_processes.lock().unwrap();
-            group_childs.push(group_child);
+            let mut map = self.solver_to_pid.lock().await;
+            map.insert(elem.id, pid);
         }
+        {
+            let mut pids = self.running_pids.lock().await;
+            pids.insert(pid);
+        }
+
+        let stdout = child.stdout.take().expect("Failed stdout");
+        let stderr = child.stderr.take().expect("Failed stderr");
 
         let tx_clone = self.tx.clone();
-        let running_processes_clone = self.running_processes.clone(); // clones the reference to the Vec
-        thread::spawn(move || {
-            Self::handle_solver_stdout(stdout, tx_clone, pid, running_processes_clone);
+        tokio::spawn(async move {
+            Self::handle_solver_stdout(stdout, tx_clone).await;
         });
 
-        thread::spawn(move || Self::handle_solver_stderr(stderr));
+        tokio::spawn(async move { Self::handle_solver_stderr(stderr).await });
+
+        let running_pids_clone = self.running_pids.clone(); // clones the reference to the HashSet, not the actual set
+        let solver_to_pid_clone = self.solver_to_pid.clone();
+
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+            {
+                let mut pids = running_pids_clone.lock().await;
+                pids.remove(&pid);
+            }
+            {
+                let mut map = solver_to_pid_clone.lock().await;
+                map.remove(&elem.id);
+            }
+        });
 
         Ok(())
     }
 
-    fn handle_solver_stdout(
-        stdout: ChildStdout,
-        tx: Sender<Msg>,
-        pid: u32,
-        running_processes: Arc<Mutex<Vec<GroupChild>>>,
+    async fn handle_solver_stdout(
+        stdout: tokio::process::ChildStdout,
+        tx: tokio::sync::mpsc::UnboundedSender<Msg>,
     ) {
         let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
 
-        for line in reader.lines() {
-            match line {
-                Ok(l) => {
-                    let _output = l;
-                    let msg = Msg::new();
+        while let Ok(Some(_)) = lines.next_line().await {
+            let msg = Msg::new();
 
-                    if let Err(e) = tx.send(msg) {
-                        eprintln!("Could not send message, receiver dropped: {}", e);
-                        break;
-                    }
-                }
-                Err(e) => eprintln!("Error reading line: {e}"),
-            }
-        }
-
-        let mut processes = running_processes.lock().unwrap();
-        if let Some(index) = processes.iter().position(|child| child.id() == pid) {
-            let mut child = processes.remove(index);
-
-            if let Err(e) = child.wait() {
-                eprintln!("Error waiting on child process {}: {}", pid, e);
+            if let Err(e) = tx.send(msg) {
+                eprintln!("Could not send message, receiver dropped: {}", e);
+                break;
             }
         }
     }
 
-    fn handle_solver_stderr(stderr: ChildStderr) {
+    async fn handle_solver_stderr(stderr: tokio::process::ChildStderr) {
         let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            match line {
-                Ok(l) => eprintln!("Minizinc Solver: {}", l),
-                Err(e) => eprintln!("Minizinc Stderr Error: {}", e),
-            }
+        let mut lines = reader.lines();
+
+        while let Ok(Some(line)) = lines.next_line().await {
+            // maybe problem we only handle if the error is okay
+            eprintln!("Minizinc Solver: {}", line);
         }
     }
 
-    pub fn apply_schedule(&self, schedule: Schedule) -> io::Result<()> {
+    pub async fn start_solvers(
+        &mut self,
+        schedule: Schedule,
+    ) -> std::result::Result<(), Vec<std::io::Error>> {
+        let mut errors = Vec::new();
+
         for elem in schedule {
-            self.start_solver(elem);
+            if let Err(e) = self.start_solver(elem).await {
+                errors.push(e);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+    pub async fn stop_solver(&mut self, id: usize) -> std::result::Result<(), Error> {
+        let pid = {
+            let mut map = self.solver_to_pid.lock().await;
+            match map.remove(&id) {
+                Some(id) => id,
+                None => {
+                    return Err(Error::InvalidSolver(format!("Solver {id} was not running")));
+                }
+            }
+        };
+
+        kill_tree::tokio::kill_tree(pid).await?;
+        {
+            let mut pids = self.running_pids.lock().await;
+            pids.remove(&pid);
+        }
+        {
+            let mut map = self.solver_to_pid.lock().await;
+            map.remove(&id);
         }
         Ok(())
     }
 
-    pub async fn stop_solver(&self, solver_name: &str) -> std::result::Result<(), Error> {
-        let id = match self.solver_to_pid.get(solver_name) {
-            Some(id) => id,
-            None => {
-                return Err(Error::InvalidSolver(format!(
-                    "Solver {solver_name} was not running"
-                )));
-            }
-        };
-        let option_pid = {
-            let processes = self.running_processes.lock().unwrap();
-            processes.iter().find_map(|child| {
-                if &child.id() == id {
-                    Some(child.id())
-                } else {
-                    None
-                }
-            })
-        };
-        match option_pid {
-            Some(pid) => {
-                kill_tree::tokio::kill_tree(pid);
-                // remove process and hashmap entry
-                Ok(())
-            }
-            Nothing => Err(Error::InvalidSolver(format!(
-                "Solver {solver_name} was not running"
-            ))),
-        }
-    }
-
+    /// Filters errors that are invalid process ids, since we can assume that those pid do not exist
     pub async fn stop_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        let target_pids: Vec<u32> = {
-            let processes = self.running_processes.lock().unwrap();
-            processes.iter().map(|child| child.id()).collect()
-        };
+        let mut running_pids_guard = self.running_pids.lock().await;
+        let pids_to_kill: Vec<u32> = running_pids_guard.iter().cloned().collect();
 
-        let kill_futures = target_pids
-            .into_iter()
-            .map(|id| kill_tree::tokio::kill_tree(id));
+        let kill_futures = pids_to_kill
+            .iter()
+            .map(|id| kill_tree::tokio::kill_tree(*id));
 
         let results = join_all(kill_futures).await;
 
-        let errors: Vec<_> = results
-            .into_iter()
-            .filter_map(|res| res.err())
-            .map(Error::from)
-            .collect();
+        let mut errors = Vec::new();
+        let mut pids_to_remove = Vec::new();
+
+        for (pid, result) in pids_to_kill.into_iter().zip(results) {
+            match result {
+                Ok(_) => {
+                    pids_to_remove.push(pid);
+                }
+                Err(err) => {
+                    if let kill_tree::Error::InvalidProcessId { .. } = err {
+                        pids_to_remove.push(pid);
+                    } else {
+                        errors.push(Error::from(err));
+                    }
+                }
+            }
+        }
+
+        running_pids_guard.retain(|pid| !pids_to_remove.contains(pid));
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    pub async fn pause_solver(&self, id: usize) -> std::result::Result<(), Error> {
+        self.send_signal(id, libc::SIGSTOP).await
+    }
+
+    pub async fn resume_solver(&self, id: usize) -> std::result::Result<(), Error> {
+        self.send_signal(id, libc::SIGCONT).await
+    }
+
+    async fn send_signal(&self, id: usize, signal: libc::c_int) -> std::result::Result<(), Error> {
+        let pid = {
+            let map = self.solver_to_pid.lock().await;
+            match map.get(&id) {
+                Some(&p) => p,
+                None => return Err(Error::InvalidSolver(format!("Solver {id} not running"))),
+            }
+        };
+
+        let _ret = unsafe { libc::kill(-(pid as i32), signal) };
+
+        // if ret != 0 {
+        //     // Retrieve the OS error (errno) if the syscall failed
+        //     return Err(Error::Io(io::Error::last_os_error()));
+        // }
+
+        Ok(())
+    }
+
+    pub async fn suspend_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
+        let mut errors = Vec::new();
+
+        // We need to clone the keys to avoid holding the lock while awaiting
+        let ids: Vec<usize> = {
+            let map = self.solver_to_pid.lock().await;
+            map.keys().cloned().collect()
+        };
+
+        for id in ids {
+            if let Err(e) = self.pause_solver(id).await {
+                errors.push(e);
+            }
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -249,17 +314,16 @@ impl Scheduler {
     }
 }
 
-pub fn cleanup_handler() -> Arc<Mutex<Vec<GroupChild>>> {
-    let running_processes: Arc<Mutex<Vec<GroupChild>>> = Arc::new(Mutex::new(Vec::new()));
+fn cleanup_handler() -> Arc<Mutex<HashSet<u32>>> {
+    let running_processes: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
     let processes_for_signal = running_processes.clone();
 
     ctrlc::set_handler(move || {
-        let pids: std::sync::MutexGuard<'_, Vec<GroupChild>> = processes_for_signal.lock().unwrap();
+        let pids = processes_for_signal.blocking_lock();
 
-        for child in pids.iter() {
+        for pid in pids.iter() {
             // kill the minizinc solver plus all the processes it spawned (including grandchildren)
-            let process_id = child.id();
-            let _ = kill_tree::blocking::kill_tree(process_id);
+            let _ = kill_tree::blocking::kill_tree(*pid);
         }
 
         std::process::exit(0);

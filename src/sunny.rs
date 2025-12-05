@@ -1,5 +1,6 @@
-use crate::ai::{Ai, Features};
-use std::path::PathBuf;
+use crate::ai::Ai;
+use crate::fzn_to_features::fzn_to_features;
+use crate::mzn_to_fzn::convert_mzn_to_fzn;
 use tokio::time::{Duration, sleep};
 
 use crate::{
@@ -7,37 +8,43 @@ use crate::{
     scheduler::{Schedule, ScheduleElement, Scheduler},
 };
 
+const FEATURES_SOLVER: &str = "gecode";
+
 pub async fn sunny(args: Args, mut ai: impl Ai, dynamic_schedule_interval: u64) {
     let timer_duration = Duration::from_secs(dynamic_schedule_interval);
     let cores = args.cores.unwrap_or(2);
-    let scheduler = Scheduler::new(args.clone());
+    let mut scheduler = Scheduler::new(args.clone());
 
-    scheduler.apply_schedule(static_schedule(cores)); // TODO: Maybe do this in another thread
-    scheduler.listen_for_results();
+    apply_schedule(&mut scheduler, static_schedule(cores))
+        .await
+        .expect("if we fail to apply the static schedule, we can't recover"); // TODO: Maybe do this in another thread
 
     let mut timer = sleep(timer_duration);
-    let fnz = convert_mzn_to_fzn(args.model, args.data);
-    let features = fzn_to_features(fnz);
+    let fzn = convert_mzn_to_fzn(args.model, args.data, FEATURES_SOLVER)
+        .await
+        .expect("failed to initially convert .mzn to .fzn");
+    let features = fzn_to_features(&fzn)
+        .await
+        .expect("if we fail to get features, we can't run the AI and thus can't recover");
 
     loop {
         timer.await;
         let schedule = ai.schedule(&features, cores);
-        scheduler.apply_schedule(schedule);
+        apply_schedule(&mut scheduler, schedule);
         timer = sleep(timer_duration);
     }
 }
 
+async fn apply_schedule(
+    scheduler: &mut Scheduler,
+    schedule: Schedule,
+) -> Result<(), crate::scheduler::Error> {
+    todo!()
+}
+
 fn static_schedule(cores: usize) -> Schedule {
     vec![
-        ScheduleElement::new("gecode".to_string(), cores / 2),
-        ScheduleElement::new("coinbc".to_string(), cores / 2),
+        ScheduleElement::new("gecode".to_string(), cores / 2, 0),
+        ScheduleElement::new("coinbc".to_string(), cores / 2, 1),
     ]
-}
-
-fn convert_mzn_to_fzn(model: PathBuf, data: Option<PathBuf>, solver_name: &str) -> PathBuf {
-    todo!()
-}
-
-fn mzn_to_features(fnz: PathBuf) -> Features {
-    todo!()
 }

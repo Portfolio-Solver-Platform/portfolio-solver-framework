@@ -1,5 +1,7 @@
 mod ai;
+mod fzn_to_features;
 mod input;
+mod mzn_to_fzn;
 mod scheduler;
 mod solver_output;
 mod sunny;
@@ -12,5 +14,5 @@ use input::Args;
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    sunny(args, SimpleAi {}, 5);
+    sunny(args, SimpleAi {}, 5).await;
 }
