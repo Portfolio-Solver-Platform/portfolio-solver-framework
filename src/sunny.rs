@@ -30,7 +30,7 @@ pub async fn sunny(args: Args, mut ai: impl Ai, dynamic_schedule_interval: u64) 
     loop {
         timer.await;
         let schedule = ai.schedule(&features, cores);
-        apply_schedule(&mut scheduler, schedule);
+        apply_schedule(&mut scheduler, schedule).await;
         timer = sleep(timer_duration);
     }
 }
@@ -39,7 +39,10 @@ async fn apply_schedule(
     scheduler: &mut Scheduler,
     schedule: Schedule,
 ) -> Result<(), crate::scheduler::Error> {
-    todo!()
+    scheduler.stop_all_solvers().await;
+    scheduler.start_solvers(schedule).await;
+    // todo!()
+    Ok(())
 }
 
 fn static_schedule(cores: usize) -> Schedule {

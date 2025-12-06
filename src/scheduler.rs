@@ -1,6 +1,8 @@
 use crate::input::Args;
 use futures::future::join_all;
 use kill_tree;
+use nix::sys::signal::{self, Signal};
+use nix::unistd::Pid;
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -215,6 +217,17 @@ impl Scheduler {
         };
 
         kill_tree::tokio::kill_tree(pid).await?;
+
+        /*
+        let pgid = Pid::from_raw(-(pid_num as i32));
+
+        // This kills minizinc AND the solver
+        if let Err(errno) = signal::kill(pgid, Signal::SIGKILL) {
+             // Handle "Process not found" errors gracefully, imply it's already dead
+             if errno != nix::errno::Errno::ESRCH {
+                 return Err(Error::Io(std::io::Error::from_raw_os_error(errno as i32)));
+             }
+        } */
         {
             let mut pids = self.running_pids.lock().await;
             pids.remove(&pid);
@@ -265,14 +278,14 @@ impl Scheduler {
     }
 
     pub async fn pause_solver(&self, id: usize) -> std::result::Result<(), Error> {
-        self.send_signal(id, libc::SIGSTOP).await
+        self.send_signal(id, Signal::SIGSTOP).await
     }
 
     pub async fn resume_solver(&self, id: usize) -> std::result::Result<(), Error> {
-        self.send_signal(id, libc::SIGCONT).await
+        self.send_signal(id, Signal::SIGCONT).await
     }
 
-    async fn send_signal(&self, id: usize, signal: libc::c_int) -> std::result::Result<(), Error> {
+    async fn send_signal(&self, id: usize, signal: Signal) -> std::result::Result<(), Error> {
         let pid = {
             let map = self.solver_to_pid.lock().await;
             match map.get(&id) {
@@ -281,14 +294,14 @@ impl Scheduler {
             }
         };
 
-        let _ret = unsafe { libc::kill(-(pid as i32), signal) };
-
-        // if ret != 0 {
-        //     // Retrieve the OS error (errno) if the syscall failed
-        //     return Err(Error::Io(io::Error::last_os_error()));
-        // }
-
-        Ok(())
+        let pgid = Pid::from_raw(-(pid as i32));
+        match signal::kill(pgid, signal) {
+            Ok(_) => Ok(()),
+            Err(errno) => {
+                // Nix wraps errno into a proper Rust error
+                Err(Error::Io(std::io::Error::from_raw_os_error(errno as i32)))
+            }
+        }
     }
 
     pub async fn suspend_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
