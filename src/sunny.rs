@@ -56,30 +56,30 @@ async fn apply_schedule(
 }
 
 fn static_schedule(cores: usize) -> Schedule {
-    let solvers = vec![
-        "picat".to_string(),
-        "gecode".to_string(),
-        "cp-sat".to_string(),
-        "chuffed".to_string(),
-        "coinbc".to_string(),
-        "yuck".to_string(),
-    ];
-    let mut schedule = vec![];
-    for (i, solver) in solvers.into_iter().cycle().take(100).enumerate() {
-        schedule.push(ScheduleElement::new(i, solver, 1));
-    }
-    schedule
-    // vec![
-    //     ScheduleElement::new(0, "picat".to_string(), 1),
-    //     ScheduleElement::new(1, "gecode".to_string(), 1),
-    //     ScheduleElement::new(2, "cp-sat".to_string(), 1),
-    //     ScheduleElement::new(3, "chuffed".to_string(), 1),
-    //     ScheduleElement::new(4, "coinbc".to_string(), 1),
-    //     ScheduleElement::new(5, "yuck".to_string(), 1),
-    //     // ScheduleElement::new(6, "xpress".to_string(), cores / 10),
-    //     // ScheduleElement::new(7, "scip".to_string(), cores / 10),
-    //     // ScheduleElement::new(8, "highs".to_string(), cores / 10),
-    //     // ScheduleElement::new(9, "gurobi".to_string(), cores / 10),
-    //     // ScheduleElement::new(10, "coinbc".to_string(), cores / 2),
-    // ]
+    // let solvers = vec![
+    //     "picat".to_string(),
+    //     "gecode".to_string(),
+    //     "cp-sat".to_string(),
+    //     "chuffed".to_string(),
+    //     "coinbc".to_string(),
+    //     "yuck".to_string(),
+    // ];
+    // let mut schedule = vec![];
+    // for (i, solver) in solvers.into_iter().cycle().take(100).enumerate() {
+    //     schedule.push(ScheduleElement::new(i, solver, 1));
+    // }
+    // schedule
+    vec![
+        ScheduleElement::new(0, "picat".to_string(), 1),
+        ScheduleElement::new(1, "gecode".to_string(), 1),
+        ScheduleElement::new(2, "cp-sat".to_string(), 1),
+        ScheduleElement::new(3, "chuffed".to_string(), 1),
+        ScheduleElement::new(4, "coinbc".to_string(), 1),
+        ScheduleElement::new(5, "yuck".to_string(), 1),
+        // ScheduleElement::new(6, "xpress".to_string(), cores / 10),
+        // ScheduleElement::new(7, "scip".to_string(), cores / 10),
+        // ScheduleElement::new(8, "highs".to_string(), cores / 10),
+        // ScheduleElement::new(9, "gurobi".to_string(), cores / 10),
+        // ScheduleElement::new(10, "coinbc".to_string(), cores / 2),
+    ]
 }
