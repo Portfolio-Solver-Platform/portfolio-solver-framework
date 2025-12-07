@@ -541,7 +541,6 @@ dependencies = [
  "ctrlc",
  "futures",
  "kill_tree",
- "nix 0.30.1",
  "regex",
  "serde",
  "serde_json",

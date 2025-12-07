@@ -12,7 +12,7 @@ use crate::sunny::sunny;
 use clap::Parser;
 use input::Args;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args = Args::parse();
     sunny(args, SimpleAi {}, 5).await;

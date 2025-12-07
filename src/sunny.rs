@@ -13,7 +13,7 @@ const FEATURES_SOLVER: &str = "gecode";
 pub async fn sunny(args: Args, mut ai: impl Ai, dynamic_schedule_interval: u64) {
     let timer_duration = Duration::from_secs(dynamic_schedule_interval);
     let cores = args.cores.unwrap_or(2);
-    let mut scheduler = Scheduler::new(args.clone());
+    let mut scheduler = Scheduler::new(args.clone()).expect("Failed to create scheduler");
 
     apply_schedule(&mut scheduler, static_schedule(cores))
         .await
@@ -31,6 +31,17 @@ pub async fn sunny(args: Args, mut ai: impl Ai, dynamic_schedule_interval: u64) 
         timer.await;
         // let schedule = ai.schedule(&vec![], cores);
         // apply_schedule(&mut scheduler, schedule).await;
+        // scheduler.stop_all_solvers().await.unwrap();
+
+        // scheduler.suspend_all_solvers().await.unwrap();
+        // scheduler.resume_all_solvers().await.unwrap();
+
+        // scheduler.resume_solver(1).await.unwrap();
+        // scheduler.resume_solver(2).await.unwrap();
+        // scheduler.resume_solver(1).await.unwrap();
+        // scheduler.resume_solver(1).await.unwrap();
+        // scheduler.resume_solver(1).await.unwrap();
+
         timer = sleep(timer_duration);
     }
 }
@@ -45,17 +56,30 @@ async fn apply_schedule(
 }
 
 fn static_schedule(cores: usize) -> Schedule {
-    vec![
-        ScheduleElement::new(0, "picat".to_string(), cores / 10),
-        ScheduleElement::new(1, "gecode".to_string(), cores / 10),
-        ScheduleElement::new(2, "cp-sat".to_string(), cores / 10),
-        ScheduleElement::new(3, "chuffed".to_string(), cores / 10),
-        ScheduleElement::new(4, "coinbc".to_string(), cores / 10),
-        ScheduleElement::new(5, "yuck".to_string(), cores / 10),
-        // ScheduleElement::new(6, "xpress".to_string(), cores / 10),
-        // ScheduleElement::new(7, "scip".to_string(), cores / 10),
-        // ScheduleElement::new(8, "highs".to_string(), cores / 10),
-        // ScheduleElement::new(9, "gurobi".to_string(), cores / 10),
-        // ScheduleElement::new(10, "coinbc".to_string(), cores / 2),
-    ]
+    let solvers = vec![
+        "picat".to_string(),
+        "gecode".to_string(),
+        "cp-sat".to_string(),
+        "chuffed".to_string(),
+        "coinbc".to_string(),
+        "yuck".to_string(),
+    ];
+    let mut schedule = vec![];
+    for (i, solver) in solvers.into_iter().cycle().take(100).enumerate() {
+        schedule.push(ScheduleElement::new(i, solver, 1));
+    }
+    schedule
+    // vec![
+    //     ScheduleElement::new(0, "picat".to_string(), 1),
+    //     ScheduleElement::new(1, "gecode".to_string(), 1),
+    //     ScheduleElement::new(2, "cp-sat".to_string(), 1),
+    //     ScheduleElement::new(3, "chuffed".to_string(), 1),
+    //     ScheduleElement::new(4, "coinbc".to_string(), 1),
+    //     ScheduleElement::new(5, "yuck".to_string(), 1),
+    //     // ScheduleElement::new(6, "xpress".to_string(), cores / 10),
+    //     // ScheduleElement::new(7, "scip".to_string(), cores / 10),
+    //     // ScheduleElement::new(8, "highs".to_string(), cores / 10),
+    //     // ScheduleElement::new(9, "gurobi".to_string(), cores / 10),
+    //     // ScheduleElement::new(10, "coinbc".to_string(), cores / 2),
+    // ]
 }
