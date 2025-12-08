@@ -27,6 +27,7 @@
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
+          lib = pkgs.lib;
 
           rustToolchain = pkgs.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         in
@@ -39,6 +40,15 @@
               pkgs.minizinc
               pkgs.git
             ];
+
+            env = lib.optionalAttrs pkgs.stdenv.isLinux {
+              LD_LIBRARY_PATH = lib.makeLibraryPath (
+                with pkgs;
+                [
+                  highs
+                ]
+              );
+            };
           };
         }
       );
