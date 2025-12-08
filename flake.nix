@@ -7,6 +7,10 @@
         nixpkgs.follows = "nixpkgs";
       };
     };
+    mzn2feat = {
+      url = "github:CP-Unibo/mzn2feat";
+      flake = false;
+    };
   };
 
   outputs =
@@ -14,7 +18,7 @@
       nixpkgs,
       rust-overlay,
       ...
-    }:
+    }@inputs:
     let
       inherit (nixpkgs) lib;
       forAllSystems = lib.genAttrs lib.systems.flakeExposed;
@@ -28,6 +32,7 @@
             overlays = [ (import rust-overlay) ];
           };
           lib = pkgs.lib;
+          mzn2feat = pkgs.callPackage ./nix/mzn2feat.nix { src = inputs.mzn2feat; };
 
           rustToolchain = pkgs.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         in
@@ -35,18 +40,21 @@
           default = pkgs.mkShell {
             packages = [
               rustToolchain
+              mzn2feat
+
               pkgs.rustup
               pkgs.cargo-audit
               pkgs.minizinc
-              pkgs.git
             ];
 
             env = {
               LD_LIBRARY_PATH = lib.makeLibraryPath (
                 with pkgs;
                 [
+                  # Provide the executables for some builtin solvers in minizinc
                   highs
                   scipopt-scip # TODO: Handle Apache 2.0 license
+                  picat # TODO: Look into Mozilla public license 2.0
                 ]
               );
             };
