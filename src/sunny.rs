@@ -1,23 +1,18 @@
-use crate::ai::Ai;
 use crate::fzn_to_features::fzn_to_features;
 use crate::mzn_to_fzn::convert_mzn_to_fzn;
+use crate::scheduler::{Schedule, ScheduleElement};
+use crate::{ai::Ai, scheduler::Scheduler};
 use tokio::time::{Duration, sleep};
 
-use crate::{
-    input::Args,
-    scheduler::{Schedule, ScheduleElement, Scheduler},
-};
+use crate::{args::Args, solver_manager::SolverManager};
 
 const FEATURES_SOLVER: &str = "gecode";
 
 pub async fn sunny(args: Args, mut ai: impl Ai, dynamic_schedule_interval: u64) {
     let timer_duration = Duration::from_secs(dynamic_schedule_interval);
     let cores = args.cores.unwrap_or(2);
-    let mut scheduler = Scheduler::new(args.clone()).expect("Failed to create scheduler");
-
-    apply_schedule(&mut scheduler, static_schedule(cores))
-        .await
-        .expect("if we fail to apply the static schedule, we can't recover"); // TODO: Maybe do this in another thread
+    let mut solver_manager = Scheduler::new(&args).expect("Failed to create solver_manager");
+    solver_manager.apply(static_schedule(cores)).await.unwrap(); // TODO: Maybe do this in another thread
 
     let mut timer = sleep(timer_duration);
     let fzn = convert_mzn_to_fzn(
@@ -28,36 +23,28 @@ pub async fn sunny(args: Args, mut ai: impl Ai, dynamic_schedule_interval: u64) 
     )
     .await
     .expect("failed to initially convert .mzn to .fzn");
-    let features = fzn_to_features(&fzn)
-        .await
-        .expect("if we fail to get features, we can't run the AI and thus can't recover");
+    // let features = fzn_to_features(&fzn)
+    //     .await
+    //     .expect("if we fail to get features, we can't run the AI and thus can't recover");
 
     loop {
         timer.await;
-        // let schedule = ai.schedule(&vec![], cores);
-        // apply_schedule(&mut scheduler, schedule).await;
-        // scheduler.stop_all_solvers().await.unwrap();
+        let schedule = ai.schedule(&vec![], cores);
+        solver_manager.apply(schedule).await.unwrap();
+        // apply_schedule(&mut solver_manager, schedule).await;
+        // solver_manager.stop_all_solvers().await.unwrap();
 
-        // scheduler.suspend_all_solvers().await.unwrap();
-        // scheduler.resume_all_solvers().await.unwrap();
+        // solver_manager.suspend_all_solvers().await.unwrap();
+        // solver_manager.resume_all_solvers().await.unwrap();
 
-        // scheduler.resume_solver(1).await.unwrap();
-        // scheduler.resume_solver(2).await.unwrap();
-        // scheduler.resume_solver(1).await.unwrap();
-        // scheduler.resume_solver(1).await.unwrap();
-        // scheduler.resume_solver(1).await.unwrap();
+        // solver_manager.resume_solver(1).await.unwrap();
+        // solver_manager.resume_solver(2).await.unwrap();
+        // solver_manager.resume_solver(1).await.unwrap();
+        // solver_manager.resume_solver(1).await.unwrap();
+        // solver_manager.resume_solver(1).await.unwrap();
 
         timer = sleep(timer_duration);
     }
-}
-
-async fn apply_schedule(
-    scheduler: &mut Scheduler,
-    schedule: Schedule,
-) -> Result<(), crate::scheduler::Error> {
-    scheduler.stop_all_solvers().await.unwrap();
-    scheduler.start_solvers(schedule).await.unwrap();
-    Ok(())
 }
 
 fn static_schedule(cores: usize) -> Schedule {
@@ -81,10 +68,10 @@ fn static_schedule(cores: usize) -> Schedule {
         ScheduleElement::new(3, "chuffed".to_string(), 1),
         ScheduleElement::new(4, "coinbc".to_string(), 1),
         ScheduleElement::new(5, "yuck".to_string(), 1),
-        // ScheduleElement::new(6, "xpress".to_string(), cores / 10),
-        // ScheduleElement::new(7, "scip".to_string(), cores / 10),
-        ScheduleElement::new(8, "highs".to_string(), cores / 10),
-        // ScheduleElement::new(9, "gurobi".to_string(), cores / 10),
-        // ScheduleElement::new(10, "coinbc".to_string(), cores / 2),
+        // ScheduleElement::new( "xpress".to_string(), cores / 10),
+        // ScheduleElement::new( "scip".to_string(), cores / 10),
+        // ScheduleElement::new( "highs".to_string(), cores / 10),
+        // ScheduleElement::new( "gurobi".to_string(), cores / 10),
+        // ScheduleElement::new("coinbc".to_string(), cores / 2),
     ]
 }
