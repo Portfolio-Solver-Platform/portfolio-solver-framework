@@ -1,4 +1,4 @@
-FROM ubuntu:24.04 AS nix
+FROM minizinc/mznc2025:latest AS nix
 
 WORKDIR /app
 
@@ -8,7 +8,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Nix
-RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --init none --no-confirm --extra-conf "filter-syscalls = false"
+ENV NIX_INSTALLER_VERSION="v3.13.2"
+RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix/tag/${NIX_INSTALLER_VERSION} | sh -s -- install linux --init none --no-confirm --extra-conf "filter-syscalls = false"
 ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
 
 # Install Nix dependencies
@@ -24,7 +25,7 @@ COPY Cargo.toml Cargo.lock ./
 
 # Cache dependencies
 # Create dummy main.rs
-RUN mkdir src && echo "fn main() {}" > src/main.rs 
+RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN nix develop -c cargo build --release
 # Remove dummy artifacts
 RUN rm -rf src target/release/portfolio-solver-framework target/release/deps/portfolio_solver_framework*

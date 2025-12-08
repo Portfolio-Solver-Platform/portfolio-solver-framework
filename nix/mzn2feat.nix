@@ -1,5 +1,5 @@
 {
-  mzn2feat,
+  src,
   pkgs,
   stdenv,
   ...
@@ -12,7 +12,7 @@ let
 in
 stdenv.mkDerivation {
   name = "mzn2feat";
-  src = mzn2feat;
+  inherit src;
 
   buildInputs = [
     pkgs.flex

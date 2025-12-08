@@ -32,7 +32,7 @@
             overlays = [ (import rust-overlay) ];
           };
           lib = pkgs.lib;
-          mzn2feat = pkgs.callPackage ./nix/mzn2feat.nix inputs;
+          mzn2feat = pkgs.callPackage ./nix/mzn2feat.nix { src = inputs.mzn2feat; };
 
           rustToolchain = pkgs.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         in
