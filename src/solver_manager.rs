@@ -1,5 +1,6 @@
 use crate::args::{Args, DebugVerbosityLevel};
 use crate::model_parser::{ModelParseError, ObjectiveType, parse_objective_type};
+use crate::mzn_to_fzn;
 use crate::scheduler::{Schedule, ScheduleElement};
 use crate::solver_output::{Output, OutputParseError, Solution, Status};
 use futures::future::join_all;
@@ -24,12 +25,19 @@ pub enum Error {
     Io(std::io::Error),
     OutputParseError(OutputParseError),
     ModelParse(ModelParseError),
+    FznConversion(mzn_to_fzn::ConversionError),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::Io(e)
+    }
+}
+
+impl From<mzn_to_fzn::ConversionError> for Error {
+    fn from(value: mzn_to_fzn::ConversionError) -> Self {
+        Self::FznConversion(value)
     }
 }
 
@@ -59,6 +67,9 @@ impl std::fmt::Display for Error {
             Error::Io(e) => write!(f, "IO error: {}", e),
             Error::OutputParseError(e) => write!(f, "output parse error: {:?}", e),
             Error::ModelParse(e) => write!(f, "model parse error: {:?}", e),
+            Error::FznConversion(e) => {
+                write!(f, "failed to convert mzn to fzn: {e:?}")
+            }
         }
     }
 }
@@ -82,6 +93,7 @@ pub struct SolverManager {
     tx: mpsc::UnboundedSender<Msg>,
     solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
     args: Args,
+    mzn_to_fzn: mzn_to_fzn::CachedConverter,
 }
 
 impl SolverManager {
@@ -98,6 +110,7 @@ impl SolverManager {
         Ok(Self {
             tx,
             solver_to_pid,
+            mzn_to_fzn: mzn_to_fzn::CachedConverter::new(args.debug_verbosity),
             args,
         })
     }
@@ -133,6 +146,10 @@ impl SolverManager {
     }
 
     async fn start_solver(&self, elem: ScheduleElement) -> std::io::Result<()> {
+        // let fzn = self
+        //     .mzn_to_fzn
+        //     .convert(&self.args.model, self.args.data.as_deref(), &elem.solver)
+        //     .await?;
         let mut cmd = Command::new("minizinc");
         cmd.arg("--solver").arg(&elem.solver);
         cmd.arg(&self.args.model);

@@ -1,8 +1,9 @@
 use crate::args::DebugVerbosityLevel;
+use dashmap::DashMap;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -19,32 +20,32 @@ impl From<tokio::io::Error> for ConversionError {
 }
 
 pub struct CachedConverter {
-    cache: HashMap<String, PathBuf>,
+    cache: DashMap<String, PathBuf>,
     debug_verbosity: DebugVerbosityLevel,
 }
 
 impl CachedConverter {
     pub fn new(debug_verbosity: DebugVerbosityLevel) -> Self {
         Self {
-            cache: HashMap::default(),
+            cache: DashMap::new(),
             debug_verbosity,
         }
     }
 
     pub async fn convert(
-        &mut self,
+        &self,
         model: &Path,
         data: Option<&Path>,
         solver_name: &str,
-    ) -> Result<&Path, ConversionError> {
-        match self.cache.entry(solver_name.to_owned()) {
-            Entry::Occupied(entry) => Ok(entry.into_mut()),
-            Entry::Vacant(entry) => {
-                let fzn =
-                    convert_mzn_to_fzn(model, data, solver_name, self.debug_verbosity).await?;
-                Ok(entry.insert(fzn))
-            }
+    ) -> Result<PathBuf, ConversionError> {
+        if let Some(fzn) = self.cache.get(solver_name) {
+            return Ok(fzn.clone());
         }
+
+        let fzn = convert_mzn_to_fzn(model, data, solver_name, self.debug_verbosity).await?;
+        self.cache.insert(solver_name.to_owned(), fzn.clone());
+
+        Ok(fzn)
     }
 }
 
@@ -76,7 +77,7 @@ async fn run_mzn_to_fzn_cmd(
 
     let mut child = cmd.spawn()?;
 
-    if verbosity >= DebugVerbosityLevel::Error
+    if verbosity >= DebugVerbosityLevel::Warning
         && let Some(stderr) = child.stderr.take()
     {
         tokio::spawn(async move {
