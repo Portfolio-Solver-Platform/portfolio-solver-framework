@@ -1,9 +1,13 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
 
-use sysinfo::{Pid, System};
+use sysinfo::System;
+use tokio::sync::Mutex;
 
 use crate::{
-    args::Args,
+    args::{Args, DebugVerbosityLevel},
+    config::Config,
     solver_manager::{Error, SolverManager},
 };
 
@@ -22,128 +26,272 @@ impl ScheduleElement {
 
 pub type Schedule = Vec<ScheduleElement>;
 
-pub struct Scheduler {
-    running_solvers: HashMap<usize, (String, usize)>,
-    suspended_solvers: HashMap<usize, (String, usize)>,
+#[derive(Clone, Debug)]
+struct SolverInfo {
+    name: String,
+    cores: usize,
+}
 
-    solver_manager: SolverManager,
+struct ScheduleChanges {
+    to_start: Schedule,
+    to_suspend: Vec<usize>,
+    to_resume: Vec<usize>,
+}
+
+struct MemoryEnforcerState {
+    running_solvers: HashMap<usize, SolverInfo>,
+    suspended_solvers: HashMap<usize, SolverInfo>,
+    system: System,
+    memory_threshold: f64,
+    memory_limit: u64, // In bytes (0 = use system total)
+    debug_verbosity: DebugVerbosityLevel,
+}
+
+pub struct Scheduler {
+    state: Arc<Mutex<MemoryEnforcerState>>,
+    pub solver_manager: Arc<SolverManager>,
+}
+
+fn is_over_threshold(used: f64, total: f64, threshold: f64) -> bool {
+    used / total > threshold
 }
 
 impl Scheduler {
-    pub fn new(args: &Args) -> std::result::Result<Self, Error> {
-        let solver_manager = SolverManager::new(args.clone())?;
+    pub fn new(args: &Args, config: &Config) -> std::result::Result<Self, Error> {
+        let solver_manager = Arc::new(SolverManager::new(args.clone())?);
 
-        Ok(Self {
+        let memory_limit = std::env::var("MEMORY_LIMIT")
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .map(|mib| mib * 1024 * 1024)
+            .unwrap_or(0);
+
+        let state = Arc::new(Mutex::new(MemoryEnforcerState {
             running_solvers: HashMap::new(),
             suspended_solvers: HashMap::new(),
+            system: System::new_all(),
+            memory_threshold: config.memory_threshold,
+            memory_limit,
+            debug_verbosity: args.debug_verbosity,
+        }));
+
+        let state_clone = state.clone();
+        let solver_manager_clone = solver_manager.clone();
+        let debug_verbosity = args.debug_verbosity;
+        let memory_enforcer_interval = config.memory_enforcer_interval;
+        tokio::spawn(async move {
+            Self::memory_enforcer_loop(
+                state_clone,
+                solver_manager_clone,
+                debug_verbosity,
+                memory_enforcer_interval,
+            )
+            .await;
+        });
+
+        Ok(Self {
+            state,
             solver_manager,
         })
     }
 
-    pub async fn apply(&mut self, schedule: Schedule) -> std::result::Result<(), Vec<Error>> {
-        let mut new_solvers = HashSet::new();
-        for elem in &schedule {
-            new_solvers.insert(elem.solver.clone());
-        }
-        let mut current_solvers = HashSet::new();
-        for (_, (solver, _)) in self.running_solvers.iter() {
-            current_solvers.insert(solver);
-        }
+    fn get_memory_usage(state: &mut MemoryEnforcerState) -> (f64, f64) {
+        state
+            .system
+            .refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+        state.system.refresh_memory();
 
-        let mut solvers_to_suspend: Vec<usize> = Vec::new();
-        for (id, (name, _)) in self.running_solvers.iter() {
-            if !new_solvers.contains(name) {
-                solvers_to_suspend.push(*id);
-            }
-        }
-        let mut solvers_to_start: Schedule = Vec::new();
-
-        for elem in schedule.into_iter() {
-            if !current_solvers.contains(&elem.solver) {
-                solvers_to_start.push(elem);
-            }
-        }
-        // println!("{:?}", solvers_to_start);
-        self.solver_manager
-            .suspend_solvers(solvers_to_suspend)
-            .await?;
-
-        for elem in solvers_to_start.iter() {
-            self.running_solvers
-                .insert(elem.id, (elem.solver.clone(), elem.cores));
-        }
-
-        self.solver_manager.start_solvers(solvers_to_start).await
+        let used = state.system.used_memory() as f64;
+        let total = if state.memory_limit > 0 {
+            state.memory_limit as f64
+        } else {
+            state.system.total_memory() as f64
+        };
+        (used, total)
     }
 
-    pub async fn apply2(&mut self, schedule: Schedule) -> std::result::Result<(), Vec<Error>> {
-        let mut solvers_to_start: Schedule = Vec::new();
-        let mut solvers_to_suspend: Vec<usize> = Vec::new();
-        let mut solvers_to_resume: Vec<usize> = Vec::new();
-        let mut solvers_to_stop: Vec<usize> = Vec::new();
+    async fn kill_suspended_until_under_threshold(
+        state: &mut MemoryEnforcerState,
+        solver_manager: &Arc<SolverManager>,
+        mut used_memory: f64,
+        total_memory: f64,
+        debug_verbosity: DebugVerbosityLevel,
+    ) -> f64 {
+        let ids: Vec<usize> = state.suspended_solvers.keys().copied().collect();
+        let mut sorted = solver_manager
+            .solvers_sorted_by_mem(&ids, &state.system)
+            .await;
 
-        let mut running_solvers = HashSet::new();
-        for id in self.running_solvers.keys() {
-            running_solvers.insert(*id);
+        while !sorted.is_empty()
+            && is_over_threshold(used_memory, total_memory, state.memory_threshold)
+        {
+            let (mem, id) = sorted.remove(0);
+            state.suspended_solvers.remove(&id);
+            if let Err(e) = solver_manager.stop_solver(id).await {
+                if debug_verbosity >= DebugVerbosityLevel::Error {
+                    eprintln!("failed to stop suspended solver: {e}");
+                }
+            } else {
+                used_memory -= mem as f64;
+            }
+        }
+        used_memory
+    }
+
+    async fn kill_running_until_under_threshold(
+        state: &mut MemoryEnforcerState,
+        solver_manager: &Arc<SolverManager>,
+        mut used_memory: f64,
+        total_memory: f64,
+        debug_verbosity: DebugVerbosityLevel,
+    ) -> f64 {
+        let ids: Vec<usize> = state.running_solvers.keys().copied().collect();
+        let num_running = ids.len();
+        if num_running == 0 {
+            return used_memory;
         }
 
-        let mut suspended_solvers = HashSet::new();
-        for id in self.suspended_solvers.keys() {
-            suspended_solvers.insert(*id);
+        let sorted = solver_manager
+            .solvers_sorted_by_mem(&ids, &state.system)
+            .await;
+        let per_solver_threshold =
+            (total_memory / num_running as f64 * state.memory_threshold) as u64;
+
+        for (solver_mem, id) in sorted {
+            if solver_mem <= per_solver_threshold
+                || !is_over_threshold(used_memory, total_memory, state.memory_threshold)
+            {
+                break;
+            }
+            state.running_solvers.remove(&id);
+            if let Err(e) = solver_manager.stop_solver(id).await {
+                if debug_verbosity >= DebugVerbosityLevel::Error {
+                    eprintln!("failed to stop running solver: {e}");
+                }
+            } else {
+                used_memory -= solver_mem as f64;
+            }
         }
+        used_memory
+    }
+
+    async fn remove_exited_solvers(
+        state: &mut MemoryEnforcerState,
+        solver_manager: &Arc<SolverManager>,
+    ) {
+        let active = solver_manager.active_solver_ids().await;
+        state.running_solvers.retain(|id, _| active.contains(id));
+        state.suspended_solvers.retain(|id, _| active.contains(id));
+    }
+
+    async fn memory_enforcer_loop(
+        state: Arc<Mutex<MemoryEnforcerState>>,
+        solver_manager: Arc<SolverManager>,
+        debug_verbosity: DebugVerbosityLevel,
+        memory_enforcer_interval: u64,
+    ) {
+        let mut interval = tokio::time::interval(Duration::from_secs(memory_enforcer_interval));
+
+        loop {
+            interval.tick().await;
+            let mut state = state.lock().await;
+
+            Self::remove_exited_solvers(&mut state, &solver_manager).await;
+
+            let (used, total) = Self::get_memory_usage(&mut state);
+            if !is_over_threshold(used, total, state.memory_threshold) {
+                continue;
+            }
+            // println!()
+            let used = Self::kill_suspended_until_under_threshold(
+                &mut state,
+                &solver_manager,
+                used,
+                total,
+                debug_verbosity,
+            )
+            .await;
+
+            if is_over_threshold(used, total, state.memory_threshold) {
+                Self::kill_running_until_under_threshold(
+                    &mut state,
+                    &solver_manager,
+                    used,
+                    total,
+                    debug_verbosity,
+                )
+                .await;
+            }
+        }
+    }
+
+    fn categorize_schedule(schedule: Schedule, state: &MemoryEnforcerState) -> ScheduleChanges {
+        let mut to_start = Vec::new();
+        let mut to_resume = Vec::new();
+
+        let mut running: HashSet<_> = state.running_solvers.keys().copied().collect();
+        let mut suspended: HashSet<_> = state.suspended_solvers.keys().copied().collect();
 
         for elem in schedule {
-            if running_solvers.contains(&elem.id) {
-                running_solvers.remove(&elem.id); // remove so we dont suspend it later
-            } else if suspended_solvers.contains(&elem.id) {
-                self.running_solvers
-                    .insert(elem.id, (elem.solver.clone(), elem.cores));
-                self.suspended_solvers.remove(&elem.id);
-                suspended_solvers.remove(&elem.id);
-                solvers_to_resume.push(elem.id);
+            if running.remove(&elem.id) { // already running, keep it running
+            } else if suspended.remove(&elem.id) {
+                to_resume.push(elem.id);
             } else {
-                self.running_solvers
-                    .insert(elem.id, (elem.solver.clone(), elem.cores));
-                solvers_to_start.push(elem);
+                to_start.push(elem);
             }
         }
 
-        for id in solvers_to_stop.iter() {
-            if self.running_solvers.contains_key(id) {
-                self.running_solvers.remove(id);
-            } else {
-                self.suspended_solvers.remove(id);
-            }
+        let to_suspend = running.into_iter().collect();
+
+        ScheduleChanges {
+            to_start,
+            to_suspend,
+            to_resume,
         }
-
-        self.solver_manager.stop_solvers(solvers_to_stop).await?;
-
-        // suspend remaining solvers
-        for id in running_solvers {
-            solvers_to_suspend.push(id);
-        }
-
-        for id in solvers_to_suspend.iter() {
-            let (solver, cores) = self.running_solvers.remove(id).unwrap(); // should never fail, otherwise there is a logic error in code
-            let elem = ScheduleElement::new(*id, solver, cores);
-            self.suspended_solvers
-                .insert(elem.id, (elem.solver.clone(), elem.cores));
-        }
-
-        self.solver_manager
-            .suspend_solvers(solvers_to_suspend)
-            .await?;
-
-        self.solver_manager
-            .resume_solvers(solvers_to_resume)
-            .await?;
-
-        self.solver_manager.start_solvers(solvers_to_start).await
     }
-}
 
-fn get_process_memory(system: &mut System, pid: u32) -> Option<u64> {
-    let pid = Pid::from_u32(pid);
-    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), false);
-    system.process(pid).map(|p| p.memory())
+    fn apply_changes_to_state(
+        state: &mut MemoryEnforcerState,
+        changes: &ScheduleChanges,
+        to_start: &Schedule,
+    ) {
+        for elem in to_start {
+            state.running_solvers.insert(
+                elem.id,
+                SolverInfo {
+                    name: elem.solver.clone(),
+                    cores: elem.cores,
+                },
+            );
+        }
+
+        for &id in &changes.to_resume {
+            if let Some(info) = state.suspended_solvers.remove(&id) {
+                state.running_solvers.insert(id, info);
+            }
+        }
+
+        for &id in &changes.to_suspend {
+            if let Some(info) = state.running_solvers.remove(&id) {
+                state.suspended_solvers.insert(id, info);
+            }
+        }
+    }
+
+    pub async fn apply(&mut self, schedule: Schedule) -> std::result::Result<(), Vec<Error>> {
+        let mut state = self.state.lock().await;
+
+        let changes = Self::categorize_schedule(schedule, &state);
+        Self::apply_changes_to_state(&mut state, &changes, &changes.to_start);
+
+        // drop(state);
+
+        self.solver_manager
+            .suspend_solvers(changes.to_suspend)
+            .await?;
+        self.solver_manager
+            .resume_solvers(changes.to_resume)
+            .await?;
+        self.solver_manager.start_solvers(changes.to_start).await
+    }
 }

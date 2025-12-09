@@ -3,7 +3,7 @@ use crate::model_parser::{ModelParseError, ObjectiveType, parse_objective_type};
 use crate::scheduler::{Schedule, ScheduleElement};
 use crate::solver_output::{Output, OutputParseError, Solution, Status};
 use futures::future::join_all;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -132,7 +132,7 @@ impl SolverManager {
         std::process::exit(0);
     }
 
-    async fn start_solver(&mut self, elem: ScheduleElement) -> std::io::Result<()> {
+    async fn start_solver(&self, elem: ScheduleElement) -> std::io::Result<()> {
         let mut cmd = Command::new("minizinc");
         cmd.arg("--solver").arg(&elem.solver);
         cmd.arg(&self.args.model);
@@ -270,10 +270,7 @@ impl SolverManager {
         }
     }
 
-    pub async fn start_solvers(
-        &mut self,
-        schedule: Schedule,
-    ) -> std::result::Result<(), Vec<Error>> {
+    pub async fn start_solvers(&self, schedule: Schedule) -> std::result::Result<(), Vec<Error>> {
         let mut errors = Vec::new();
 
         for elem in schedule {
@@ -384,6 +381,8 @@ impl SolverManager {
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
         id: usize,
     ) -> std::result::Result<(), Error> {
+        // Resume first so stopped processes can receive SIGTERM
+        let _ = Self::send_signal_to_solver(solver_to_pid.clone(), id, String::from(RESUME_SIGNAL)).await;
         Self::send_signal_to_solver(solver_to_pid.clone(), id, String::from(KILL_SIGNAL)).await
     }
 
@@ -391,12 +390,16 @@ impl SolverManager {
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
         ids: Vec<usize>,
     ) -> std::result::Result<(), Vec<Error>> {
+        // Resume first so stopped processes can receive SIGTERM
+        let _ = Self::send_signal_to_solvers(solver_to_pid.clone(), ids.clone(), String::from(RESUME_SIGNAL)).await;
         Self::send_signal_to_solvers(solver_to_pid.clone(), ids, String::from(KILL_SIGNAL)).await
     }
 
     async fn _stop_all_solvers(
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
     ) -> std::result::Result<(), Vec<Error>> {
+        // Resume first so stopped processes can receive SIGTERM
+        let _ = Self::send_signal_to_all_solvers(solver_to_pid.clone(), String::from(RESUME_SIGNAL)).await;
         Self::send_signal_to_all_solvers(solver_to_pid.clone(), String::from(KILL_SIGNAL)).await
     }
 
@@ -412,16 +415,56 @@ impl SolverManager {
         Self::_stop_all_solvers(self.solver_to_pid.clone()).await
     }
 
-    async fn get_process_memory(system: &mut System, pid: u32) -> Option<u64> {
-        let pid = Pid::from_u32(pid);
-        system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), false);
-        system.process(pid).map(|p| p.memory())
+    fn get_process_tree_memory(system: &System, root_pid: u32) -> u64 {
+        let root_pid = Pid::from_u32(root_pid);
+        let mut total_memory = 0u64;
+        let mut pids_to_check = vec![root_pid];
+
+        while let Some(pid) = pids_to_check.pop() {
+            if let Some(process) = system.process(pid) {
+                total_memory += process.memory();
+                for (child_pid, child_process) in system.processes() {
+                    if child_process.parent() == Some(pid) {
+                        pids_to_check.push(*child_pid);
+                    }
+                }
+            }
+        }
+
+        total_memory
     }
 
-    // pub async fn print_memory(&self) {
-    //     let ids: Vec<(String, usize)> =
-    //         { self.solver_to_pid.lock().await.iter().cloned().collect() };
-    // }
+    pub async fn active_solver_ids(&self) -> HashSet<usize> {
+        self.solver_to_pid.lock().await.keys().copied().collect()
+    }
+
+    pub async fn solvers_sorted_by_mem(&self, ids: &[usize], system: &System) -> Vec<(u64, usize)> {
+        let solvers: Vec<(u32, usize)> = {
+            let map = self.solver_to_pid.lock().await;
+            let mut solvers: Vec<(u32, usize)> = Vec::new();
+            for id in ids {
+                match map.get(id) {
+                    Some(pid) => solvers.push((*pid, *id)),
+                    None => {
+                        if self.args.debug_verbosity >= DebugVerbosityLevel::Warning {
+                            eprintln!(
+                                "solvers_sorted_by_mem failed to extract solver pid for id {}",
+                                id
+                            );
+                        }
+                    }
+                }
+            }
+            solvers
+        };
+
+        let mut solver_mem = solvers
+            .into_iter()
+            .map(|(pid, id)| (Self::get_process_tree_memory(&system, pid), id))
+            .collect::<Vec<(u64, usize)>>();
+        solver_mem.sort_by_key(|(mem, _)| std::cmp::Reverse(*mem));
+        solver_mem
+    }
 }
 
 fn cleanup_handler(solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>) {
@@ -431,6 +474,12 @@ fn cleanup_handler(solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>) {
         let solver_to_pid_guard = solver_to_pid_clone.blocking_lock();
 
         for pid in solver_to_pid_guard.values() {
+            // Resume first so stopped processes can receive kill signal
+            let resume_config = kill_tree::Config {
+                signal: String::from(RESUME_SIGNAL),
+                ..Default::default()
+            };
+            let _ = kill_tree::blocking::kill_tree_with_config(*pid, &resume_config);
             let _ = kill_tree::blocking::kill_tree(*pid);
         }
 

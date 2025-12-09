@@ -1,18 +1,16 @@
-use crate::fzn_to_features::fzn_to_features;
+use crate::config::Config;
 use crate::mzn_to_fzn::convert_mzn_to_fzn;
-use crate::scheduler::{Schedule, ScheduleElement};
-use crate::{ai::Ai, scheduler::Scheduler};
-use tokio::time::{Duration, sleep};
-
-use crate::{args::Args, solver_manager::SolverManager};
+use crate::scheduler::{Schedule, ScheduleElement, Scheduler};
+use crate::{ai::Ai, args::Args};
+use tokio::time::{sleep, Duration};
 
 const FEATURES_SOLVER: &str = "gecode";
 
-pub async fn sunny(args: Args, mut ai: impl Ai, dynamic_schedule_interval: u64) {
-    let timer_duration = Duration::from_secs(dynamic_schedule_interval);
+pub async fn sunny(args: Args, mut ai: impl Ai, config: Config) {
+    let timer_duration = Duration::from_secs(config.dynamic_schedule_interval);
     let cores = args.cores.unwrap_or(2);
-    let mut solver_manager = Scheduler::new(&args).expect("Failed to create solver_manager");
-    solver_manager.apply(static_schedule(cores)).await.unwrap(); // TODO: Maybe do this in another thread
+    let mut scheduler = Scheduler::new(&args, &config).expect("Failed to create scheduler");
+    scheduler.apply(static_schedule(cores)).await.unwrap(); // TODO: Maybe do this in another thread
 
     let mut timer = sleep(timer_duration);
     let fzn = convert_mzn_to_fzn(
@@ -29,10 +27,15 @@ pub async fn sunny(args: Args, mut ai: impl Ai, dynamic_schedule_interval: u64) 
 
     loop {
         timer.await;
-        let schedule = ai.schedule(&vec![], cores);
-        solver_manager.apply(schedule).await.unwrap();
+        // let schedule = ai.schedule(&vec![], cores);
+        // scheduler
+        //     .solver_manager
+        //     .suspend_all_solvers()
+        //     .await
+        //     .unwrap();
+
+        scheduler.apply(static_schedule(cores)).await.unwrap();
         // apply_schedule(&mut solver_manager, schedule).await;
-        // solver_manager.stop_all_solvers().await.unwrap();
 
         // solver_manager.suspend_all_solvers().await.unwrap();
         // solver_manager.resume_all_solvers().await.unwrap();
