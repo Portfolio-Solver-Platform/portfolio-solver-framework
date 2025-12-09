@@ -144,7 +144,11 @@ impl Scheduler {
         debug_verbosity: DebugVerbosityLevel,
     ) -> f64 {
         let ids: Vec<usize> = state.running_solvers.keys().copied().collect();
-        let num_running = ids.len();
+        let num_running: usize = state
+            .running_solvers
+            .iter()
+            .map(|(_, info)| info.cores)
+            .sum();
         if num_running == 0 {
             return used_memory;
         }
@@ -152,22 +156,46 @@ impl Scheduler {
         let sorted = solver_manager
             .solvers_sorted_by_mem(&ids, &state.system)
             .await;
-        let per_solver_threshold =
+        let per_core_threshold =
             (total_memory / num_running as f64 * state.memory_threshold) as u64;
 
+        let mut remaining = Vec::new();
+
         for (solver_mem, id) in sorted {
-            if solver_mem <= per_solver_threshold
-                || !is_over_threshold(used_memory, total_memory, state.memory_threshold)
-            {
-                break;
+            let cores = match state.running_solvers.get(&id) {
+                Some(info) => info.cores as u64,
+                None => {
+                    // should never fail since the state is locked however error logging just for safety
+                    if debug_verbosity >= DebugVerbosityLevel::Error {
+                        eprintln!(
+                            "Failed to get solver info. Cause of this error is propably from a logic error in the code"
+                        );
+                    }
+                    continue;
+                }
+            };
+            if solver_mem / cores > per_core_threshold {
+                // use number of cores a process has to decide if it uses more that its fair share
+                state.running_solvers.remove(&id);
+                if let Err(e) = solver_manager.stop_solver(id).await {
+                    if debug_verbosity >= DebugVerbosityLevel::Error {
+                        eprintln!("failed to stop running solver: {e}");
+                    }
+                } else {
+                    used_memory -= solver_mem as f64;
+                }
+            } else {
+                remaining.push((solver_mem, id));
             }
-            state.running_solvers.remove(&id);
+        }
+        while is_over_threshold(used_memory, total_memory, state.memory_threshold) {
+            let (mem, id) = remaining.remove(0);
             if let Err(e) = solver_manager.stop_solver(id).await {
                 if debug_verbosity >= DebugVerbosityLevel::Error {
                     eprintln!("failed to stop running solver: {e}");
                 }
             } else {
-                used_memory -= solver_mem as f64;
+                used_memory -= mem as f64;
             }
         }
         used_memory
@@ -200,7 +228,6 @@ impl Scheduler {
             if !is_over_threshold(used, total, state.memory_threshold) {
                 continue;
             }
-            // println!()
             let used = Self::kill_suspended_until_under_threshold(
                 &mut state,
                 &solver_manager,
