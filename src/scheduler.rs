@@ -36,7 +36,6 @@ struct ScheduleChanges {
     to_start: Schedule,
     to_suspend: Vec<usize>,
     to_resume: Vec<usize>,
-    to_stop: Vec<usize>,
 }
 
 struct MemoryEnforcerState {
@@ -224,6 +223,35 @@ impl Scheduler {
         }
     }
 
+    async fn limit_to_single_solver(
+        keep_running: &[usize],
+        to_resume: Vec<usize>,
+        to_start: Schedule,
+        state: &MemoryEnforcerState,
+        solver_manager: &Arc<SolverManager>,
+    ) -> (Schedule, Vec<usize>, Vec<usize>) {
+        // Returns (to_start, to_resume, to_stop)
+        let mut to_stop = Vec::new();
+
+        if !keep_running.is_empty() {
+            // Keep only the smallest running solver, stop the rest
+            let solvers_sorted_by_mem = solver_manager
+                .solvers_sorted_by_mem(keep_running, &state.system)
+                .await;
+            let len = solvers_sorted_by_mem.len();
+            for (_, id) in solvers_sorted_by_mem.iter().take(len.saturating_sub(1)) {
+                to_stop.push(*id);
+            }
+            (Vec::new(), Vec::new(), to_stop)
+        } else if !to_resume.is_empty() {
+            // Resume only the first suspended solver
+            (Vec::new(), vec![to_resume[0]], to_stop)
+        } else {
+            // Start only the first new solver
+            (vec![to_start[0].clone()], Vec::new(), to_stop)
+        }
+    }
+
     async fn categorize_schedule(
         schedule: Schedule,
         state: &mut MemoryEnforcerState,
@@ -233,13 +261,9 @@ impl Scheduler {
 
         let mut to_start = Vec::new();
         let mut to_resume = Vec::new();
-        let mut to_stop = Vec::new();
         let mut keep_running = Vec::new();
         let mut running: HashSet<_> = state.running_solvers.keys().copied().collect();
         let mut suspended: HashSet<_> = state.suspended_solvers.keys().copied().collect();
-
-        let (used, total) = Self::get_memory_usage(state);
-        let _is_over_threshold = is_over_threshold(used, total, state.memory_threshold);
 
         for elem in schedule {
             if running.remove(&elem.id) {
@@ -252,34 +276,12 @@ impl Scheduler {
             }
         }
 
-        // if we are over limit dont start more solvers, however always make sure at least one is running
-        if _is_over_threshold && to_resume.len() + to_start.len() + keep_running.len() > 1 {
-            if keep_running.len() >= 1 {
-                let solvers_sorted_by_mem = solver_manager
-                    .solvers_sorted_by_mem(&keep_running, &state.system)
-                    .await;
-                let len = solvers_sorted_by_mem.len();
-                for (_, id) in solvers_sorted_by_mem.iter().take(len.saturating_sub(1)) {
-                    // let always one solver running
-                    to_stop.push(*id);
-                }
-
-                to_resume = Vec::new();
-                to_start = Vec::new();
-            } else if to_resume.len() >= 1 {
-                to_resume = vec![to_resume[0]]; // start only the first
-                to_start = Vec::new();
-            } else {
-                to_start = vec![to_start[0].clone()]; // start only the first
-            }
-        }
         let to_suspend = running.into_iter().collect();
 
         ScheduleChanges {
             to_start,
             to_suspend,
             to_resume,
-            to_stop,
         }
     }
 
@@ -292,10 +294,6 @@ impl Scheduler {
                     cores: elem.cores,
                 },
             );
-        }
-
-        for id in &changes.to_stop {
-            state.running_solvers.remove(&id);
         }
 
         for &id in &changes.to_resume {
@@ -317,13 +315,12 @@ impl Scheduler {
             Self::categorize_schedule(schedule, &mut state, self.solver_manager.clone()).await;
         Self::apply_changes_to_state(&mut state, &changes);
 
-        self.solver_manager.stop_solvers(changes.to_stop).await?;
         self.solver_manager
-            .suspend_solvers(changes.to_suspend)
+            .suspend_solvers(&changes.to_suspend)
             .await?;
         self.solver_manager
-            .resume_solvers(changes.to_resume)
+            .resume_solvers(&changes.to_resume)
             .await?;
-        self.solver_manager.start_solvers(changes.to_start).await
+        self.solver_manager.start_solvers(&changes.to_start).await
     }
 }

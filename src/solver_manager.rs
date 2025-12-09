@@ -145,11 +145,7 @@ impl SolverManager {
         std::process::exit(0);
     }
 
-    async fn start_solver(&self, elem: ScheduleElement) -> std::io::Result<()> {
-        // let fzn = self
-        //     .mzn_to_fzn
-        //     .convert(&self.args.model, self.args.data.as_deref(), &elem.solver)
-        //     .await?;
+    async fn start_solver(&self, elem: &ScheduleElement) -> std::io::Result<()> {
         let mut cmd = Command::new("minizinc");
         cmd.arg("--solver").arg(&elem.solver);
         cmd.arg(&self.args.model);
@@ -201,6 +197,7 @@ impl SolverManager {
 
         let solver_to_pid_clone = self.solver_to_pid.clone();
         let solver_name = elem.solver.clone();
+        let solver_id = elem.id;
         let verbosity_wait = self.args.debug_verbosity;
 
         tokio::spawn(async move {
@@ -218,7 +215,7 @@ impl SolverManager {
                 _ => {}
             }
             let mut map = solver_to_pid_clone.lock().await;
-            map.remove(&elem.id);
+            map.remove(&solver_id);
         });
 
         Ok(())
@@ -287,8 +284,11 @@ impl SolverManager {
         }
     }
 
-    pub async fn start_solvers(&self, schedule: Schedule) -> std::result::Result<(), Vec<Error>> {
-        let futures = schedule.into_iter().map(|elem| self.start_solver(elem));
+    pub async fn start_solvers(
+        &self,
+        schedule: &[ScheduleElement],
+    ) -> std::result::Result<(), Vec<Error>> {
+        let futures = schedule.iter().map(|elem| self.start_solver(elem));
         let results = join_all(futures).await;
         let errors: Vec<Error> = results
             .into_iter()
@@ -335,12 +335,12 @@ impl SolverManager {
 
     async fn send_signal_to_solvers(
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
-        ids: Vec<usize>,
-        signal: String,
+        ids: &[usize],
+        signal: &str,
     ) -> std::result::Result<(), Vec<Error>> {
         let futures = ids
             .iter()
-            .map(|id| Self::send_signal_to_solver(solver_to_pid.clone(), *id, signal.clone()));
+            .map(|id| Self::send_signal_to_solver(solver_to_pid.clone(), *id, signal.to_string()));
         let results = join_all(futures).await;
         let errors: Vec<Error> = results.into_iter().filter_map(|res| res.err()).collect();
 
@@ -353,10 +353,10 @@ impl SolverManager {
 
     async fn send_signal_to_all_solvers(
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
-        signal: String,
+        signal: &str,
     ) -> std::result::Result<(), Vec<Error>> {
         let ids: Vec<usize> = { solver_to_pid.lock().await.keys().cloned().collect() };
-        Self::send_signal_to_solvers(solver_to_pid.clone(), ids, signal).await
+        Self::send_signal_to_solvers(solver_to_pid.clone(), &ids, signal).await
     }
 
     pub async fn suspend_solver(&self, id: usize) -> std::result::Result<(), Error> {
@@ -364,18 +364,12 @@ impl SolverManager {
             .await
     }
 
-    pub async fn suspend_solvers(&self, ids: Vec<usize>) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(
-            self.solver_to_pid.clone(),
-            ids,
-            String::from(SUSPEND_SIGNAL),
-        )
-        .await
+    pub async fn suspend_solvers(&self, ids: &[usize]) -> std::result::Result<(), Vec<Error>> {
+        Self::send_signal_to_solvers(self.solver_to_pid.clone(), ids, SUSPEND_SIGNAL).await
     }
 
     pub async fn suspend_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_all_solvers(self.solver_to_pid.clone(), String::from(SUSPEND_SIGNAL))
-            .await
+        Self::send_signal_to_all_solvers(self.solver_to_pid.clone(), SUSPEND_SIGNAL).await
     }
 
     pub async fn resume_solver(&self, id: usize) -> std::result::Result<(), Error> {
@@ -383,14 +377,12 @@ impl SolverManager {
             .await
     }
 
-    pub async fn resume_solvers(&self, ids: Vec<usize>) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(self.solver_to_pid.clone(), ids, String::from(RESUME_SIGNAL))
-            .await
+    pub async fn resume_solvers(&self, ids: &[usize]) -> std::result::Result<(), Vec<Error>> {
+        Self::send_signal_to_solvers(self.solver_to_pid.clone(), ids, RESUME_SIGNAL).await
     }
 
     pub async fn resume_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_all_solvers(self.solver_to_pid.clone(), String::from(RESUME_SIGNAL))
-            .await
+        Self::send_signal_to_all_solvers(self.solver_to_pid.clone(), RESUME_SIGNAL).await
     }
 
     async fn _stop_solver(
@@ -405,33 +397,26 @@ impl SolverManager {
 
     async fn _stop_solvers(
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
-        ids: Vec<usize>,
+        ids: &[usize],
     ) -> std::result::Result<(), Vec<Error>> {
         // Resume first so stopped processes can receive SIGTERM
-        let _ = Self::send_signal_to_solvers(
-            solver_to_pid.clone(),
-            ids.clone(),
-            String::from(RESUME_SIGNAL),
-        )
-        .await;
-        Self::send_signal_to_solvers(solver_to_pid.clone(), ids, String::from(KILL_SIGNAL)).await
+        let _ = Self::send_signal_to_solvers(solver_to_pid.clone(), ids, RESUME_SIGNAL).await;
+        Self::send_signal_to_solvers(solver_to_pid.clone(), ids, KILL_SIGNAL).await
     }
 
     async fn _stop_all_solvers(
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
     ) -> std::result::Result<(), Vec<Error>> {
         // Resume first so stopped processes can receive SIGTERM
-        let _ =
-            Self::send_signal_to_all_solvers(solver_to_pid.clone(), String::from(RESUME_SIGNAL))
-                .await;
-        Self::send_signal_to_all_solvers(solver_to_pid.clone(), String::from(KILL_SIGNAL)).await
+        let _ = Self::send_signal_to_all_solvers(solver_to_pid.clone(), RESUME_SIGNAL).await;
+        Self::send_signal_to_all_solvers(solver_to_pid.clone(), KILL_SIGNAL).await
     }
 
     pub async fn stop_solver(&self, id: usize) -> std::result::Result<(), Error> {
         Self::_stop_solver(self.solver_to_pid.clone(), id).await
     }
 
-    pub async fn stop_solvers(&self, ids: Vec<usize>) -> std::result::Result<(), Vec<Error>> {
+    pub async fn stop_solvers(&self, ids: &[usize]) -> std::result::Result<(), Vec<Error>> {
         Self::_stop_solvers(self.solver_to_pid.clone(), ids).await
     }
 
