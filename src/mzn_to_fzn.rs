@@ -1,4 +1,6 @@
 use crate::args::DebugVerbosityLevel;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -16,6 +18,36 @@ impl From<tokio::io::Error> for ConversionError {
     }
 }
 
+pub struct CachedConverter {
+    cache: HashMap<String, PathBuf>,
+    debug_verbosity: DebugVerbosityLevel,
+}
+
+impl CachedConverter {
+    pub fn new(debug_verbosity: DebugVerbosityLevel) -> Self {
+        Self {
+            cache: HashMap::default(),
+            debug_verbosity,
+        }
+    }
+
+    pub async fn convert(
+        &mut self,
+        model: &Path,
+        data: Option<&Path>,
+        solver_name: &str,
+    ) -> Result<&Path, ConversionError> {
+        match self.cache.entry(solver_name.to_owned()) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let fzn =
+                    convert_mzn_to_fzn(model, data, solver_name, self.debug_verbosity).await?;
+                Ok(entry.insert(fzn))
+            }
+        }
+    }
+}
+
 pub async fn convert_mzn_to_fzn(
     model: &Path,
     data: Option<&Path>,
@@ -23,7 +55,7 @@ pub async fn convert_mzn_to_fzn(
     verbosity: DebugVerbosityLevel,
 ) -> Result<PathBuf, ConversionError> {
     let fzn_file_path = get_new_model_file_name(model, solver_name);
-    run_mzn_to_fzn_cmd(&model, data, solver_name, &fzn_file_path, verbosity).await?;
+    run_mzn_to_fzn_cmd(model, data, solver_name, &fzn_file_path, verbosity).await?;
     Ok(fzn_file_path)
 }
 
@@ -44,14 +76,14 @@ async fn run_mzn_to_fzn_cmd(
 
     let mut child = cmd.spawn()?;
 
-    if let Some(stderr) = child.stderr.take() {
+    if verbosity >= DebugVerbosityLevel::Error
+        && let Some(stderr) = child.stderr.take()
+    {
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if verbosity >= DebugVerbosityLevel::Warning {
-                    eprintln!("MiniZinc compilation: {}", line);
-                }
+                eprintln!("MiniZinc compilation: {}", line);
             }
         });
     }
