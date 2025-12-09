@@ -271,13 +271,12 @@ impl SolverManager {
     }
 
     pub async fn start_solvers(&self, schedule: Schedule) -> std::result::Result<(), Vec<Error>> {
-        let mut errors = Vec::new();
-
-        for elem in schedule {
-            if let Err(e) = self.start_solver(elem).await {
-                errors.push(e.into());
-            }
-        }
+        let futures = schedule.into_iter().map(|elem| self.start_solver(elem));
+        let results = join_all(futures).await;
+        let errors: Vec<Error> = results
+            .into_iter()
+            .filter_map(|res| res.err().map(Error::from))
+            .collect();
 
         if errors.is_empty() {
             Ok(())
@@ -382,7 +381,8 @@ impl SolverManager {
         id: usize,
     ) -> std::result::Result<(), Error> {
         // Resume first so stopped processes can receive SIGTERM
-        let _ = Self::send_signal_to_solver(solver_to_pid.clone(), id, String::from(RESUME_SIGNAL)).await;
+        let _ = Self::send_signal_to_solver(solver_to_pid.clone(), id, String::from(RESUME_SIGNAL))
+            .await;
         Self::send_signal_to_solver(solver_to_pid.clone(), id, String::from(KILL_SIGNAL)).await
     }
 
@@ -391,7 +391,12 @@ impl SolverManager {
         ids: Vec<usize>,
     ) -> std::result::Result<(), Vec<Error>> {
         // Resume first so stopped processes can receive SIGTERM
-        let _ = Self::send_signal_to_solvers(solver_to_pid.clone(), ids.clone(), String::from(RESUME_SIGNAL)).await;
+        let _ = Self::send_signal_to_solvers(
+            solver_to_pid.clone(),
+            ids.clone(),
+            String::from(RESUME_SIGNAL),
+        )
+        .await;
         Self::send_signal_to_solvers(solver_to_pid.clone(), ids, String::from(KILL_SIGNAL)).await
     }
 
@@ -399,7 +404,9 @@ impl SolverManager {
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
     ) -> std::result::Result<(), Vec<Error>> {
         // Resume first so stopped processes can receive SIGTERM
-        let _ = Self::send_signal_to_all_solvers(solver_to_pid.clone(), String::from(RESUME_SIGNAL)).await;
+        let _ =
+            Self::send_signal_to_all_solvers(solver_to_pid.clone(), String::from(RESUME_SIGNAL))
+                .await;
         Self::send_signal_to_all_solvers(solver_to_pid.clone(), String::from(KILL_SIGNAL)).await
     }
 

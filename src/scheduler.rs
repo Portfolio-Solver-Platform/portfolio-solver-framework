@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use std::vec;
 
 use sysinfo::System;
 use tokio::sync::Mutex;
@@ -26,7 +27,6 @@ impl ScheduleElement {
 
 pub type Schedule = Vec<ScheduleElement>;
 
-#[derive(Clone, Debug)]
 struct SolverInfo {
     name: String,
     cores: usize,
@@ -36,6 +36,7 @@ struct ScheduleChanges {
     to_start: Schedule,
     to_suspend: Vec<usize>,
     to_resume: Vec<usize>,
+    to_stop: Vec<usize>,
 }
 
 struct MemoryEnforcerState {
@@ -44,7 +45,6 @@ struct MemoryEnforcerState {
     system: System,
     memory_threshold: f64,
     memory_limit: u64, // In bytes (0 = use system total)
-    debug_verbosity: DebugVerbosityLevel,
 }
 
 pub struct Scheduler {
@@ -72,7 +72,6 @@ impl Scheduler {
             system: System::new_all(),
             memory_threshold: config.memory_threshold,
             memory_limit,
-            debug_verbosity: args.debug_verbosity,
         }));
 
         let state_clone = state.clone();
@@ -225,15 +224,27 @@ impl Scheduler {
         }
     }
 
-    fn categorize_schedule(schedule: Schedule, state: &MemoryEnforcerState) -> ScheduleChanges {
+    async fn categorize_schedule(
+        schedule: Schedule,
+        state: &mut MemoryEnforcerState,
+        solver_manager: Arc<SolverManager>,
+    ) -> ScheduleChanges {
+        Self::remove_exited_solvers(state, &solver_manager).await;
+
         let mut to_start = Vec::new();
         let mut to_resume = Vec::new();
-
+        let mut to_stop = Vec::new();
+        let mut keep_running = Vec::new();
         let mut running: HashSet<_> = state.running_solvers.keys().copied().collect();
         let mut suspended: HashSet<_> = state.suspended_solvers.keys().copied().collect();
 
+        let (used, total) = Self::get_memory_usage(state);
+        let _is_over_threshold = is_over_threshold(used, total, state.memory_threshold);
+
         for elem in schedule {
-            if running.remove(&elem.id) { // already running, keep it running
+            if running.remove(&elem.id) {
+                // already running, keep it running
+                keep_running.push(elem.id);
             } else if suspended.remove(&elem.id) {
                 to_resume.push(elem.id);
             } else {
@@ -241,21 +252,39 @@ impl Scheduler {
             }
         }
 
+        // if we are over limit dont start more solvers, however always make sure at least one is running
+        if _is_over_threshold && to_resume.len() + to_start.len() + keep_running.len() > 1 {
+            if keep_running.len() >= 1 {
+                let solvers_sorted_by_mem = solver_manager
+                    .solvers_sorted_by_mem(&keep_running, &state.system)
+                    .await;
+                let len = solvers_sorted_by_mem.len();
+                for (_, id) in solvers_sorted_by_mem.iter().take(len.saturating_sub(1)) {
+                    // let always one solver running
+                    to_stop.push(*id);
+                }
+
+                to_resume = Vec::new();
+                to_start = Vec::new();
+            } else if to_resume.len() >= 1 {
+                to_resume = vec![to_resume[0]]; // start only the first
+                to_start = Vec::new();
+            } else {
+                to_start = vec![to_start[0].clone()]; // start only the first
+            }
+        }
         let to_suspend = running.into_iter().collect();
 
         ScheduleChanges {
             to_start,
             to_suspend,
             to_resume,
+            to_stop,
         }
     }
 
-    fn apply_changes_to_state(
-        state: &mut MemoryEnforcerState,
-        changes: &ScheduleChanges,
-        to_start: &Schedule,
-    ) {
-        for elem in to_start {
+    fn apply_changes_to_state(state: &mut MemoryEnforcerState, changes: &ScheduleChanges) {
+        for elem in &changes.to_start {
             state.running_solvers.insert(
                 elem.id,
                 SolverInfo {
@@ -263,6 +292,10 @@ impl Scheduler {
                     cores: elem.cores,
                 },
             );
+        }
+
+        for id in &changes.to_stop {
+            state.running_solvers.remove(&id);
         }
 
         for &id in &changes.to_resume {
@@ -280,12 +313,11 @@ impl Scheduler {
 
     pub async fn apply(&mut self, schedule: Schedule) -> std::result::Result<(), Vec<Error>> {
         let mut state = self.state.lock().await;
+        let changes =
+            Self::categorize_schedule(schedule, &mut state, self.solver_manager.clone()).await;
+        Self::apply_changes_to_state(&mut state, &changes);
 
-        let changes = Self::categorize_schedule(schedule, &state);
-        Self::apply_changes_to_state(&mut state, &changes, &changes.to_start);
-
-        // drop(state);
-
+        self.solver_manager.stop_solvers(changes.to_stop).await?;
         self.solver_manager
             .suspend_solvers(changes.to_suspend)
             .await?;
