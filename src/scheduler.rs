@@ -56,8 +56,8 @@ fn is_over_threshold(used: f64, total: f64, threshold: f64) -> bool {
 }
 
 impl Scheduler {
-    pub fn new(args: &Args, config: &Config) -> std::result::Result<Self, Error> {
-        let solver_manager = Arc::new(SolverManager::new(args.clone())?);
+    pub async fn new(args: &Args, config: &Config) -> std::result::Result<Self, Error> {
+        let solver_manager = Arc::new(SolverManager::new(args.clone()).await?);
 
         let memory_limit = std::env::var("MEMORY_LIMIT")
             .ok()

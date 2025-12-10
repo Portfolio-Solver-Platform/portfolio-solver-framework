@@ -1,14 +1,29 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 
-use regex::Regex;
+use tokio::process::Command;
 
 #[derive(Debug)]
 pub enum ModelParseError {
-    NoSolveStatement,
+    MethodParseError(String),
     IoError(std::io::Error),
     RegexError(regex::Error),
+    CommandFailed(ExitStatus),
+    CommandOutputError(CommandOutputError),
+}
+
+#[derive(Debug)]
+pub enum CommandOutputError {
+    NonJsonOutput,
+    JsonIsNotObject,
+}
+
+impl From<CommandOutputError> for ModelParseError {
+    fn from(value: CommandOutputError) -> Self {
+        Self::CommandOutputError(value)
+    }
 }
 
 impl From<std::io::Error> for ModelParseError {
@@ -95,20 +110,63 @@ fn get_objective_constraint(
     }
 }
 
-pub fn parse_objective_type(model_path: &Path) -> Result<ObjectiveType, ModelParseError> {
-    let content = fs::read_to_string(model_path)?;
-    let re = Regex::new(r"solve([\S\s]*?;)")?;
+pub async fn get_objective_type(model_path: &Path) -> Result<ObjectiveType, ModelParseError> {
+    let output = run_model_interface_cmd(model_path).await?;
+    let json: serde_json::Value =
+        serde_json::from_str(&output).map_err(|_| CommandOutputError::NonJsonOutput)?;
+    let serde_json::Value::Object(object) = json else {
+        return Err(CommandOutputError::JsonIsNotObject.into());
+    };
 
-    if let Some(cap) = re.captures(&content) {
-        let solve_stmt = &cap[1];
-        if solve_stmt.contains("minimize") {
-            Ok(ObjectiveType::Minimize)
-        } else if solve_stmt.contains("maximize") {
-            Ok(ObjectiveType::Maximize)
-        } else {
-            Ok(ObjectiveType::Satisfy)
-        }
-    } else {
-        Err(ModelParseError::NoSolveStatement)
+    let val = parse_method_from_json_object(object);
+
+    match val {
+        Ok(value) => println!("{value:?}"),
+        Err(_) => println!("Error"),
     }
+
+    val
+}
+
+fn parse_method_from_json_object(
+    object: serde_json::Map<String, serde_json::Value>,
+) -> Result<ObjectiveType, ModelParseError> {
+    let Some(method_json) = object.get("method") else {
+        return Err(ModelParseError::MethodParseError(
+            "'method' field does not exist".to_owned(),
+        ));
+    };
+
+    let serde_json::Value::String(method) = method_json else {
+        return Err(ModelParseError::MethodParseError(
+            "'method' field is not a string".to_owned(),
+        ));
+    };
+
+    match method.as_str() {
+        "min" => Ok(ObjectiveType::Minimize),
+        "max" => Ok(ObjectiveType::Maximize),
+        "sat" => Ok(ObjectiveType::Satisfy),
+        _ => Err(ModelParseError::MethodParseError(
+            "Method not recognised".to_owned(),
+        )),
+    }
+}
+
+async fn run_model_interface_cmd(model_path: &Path) -> Result<String, ModelParseError> {
+    let mut cmd = get_model_interface_cmd(model_path);
+    let output = cmd.output().await?;
+    if !output.status.success() {
+        return Err(ModelParseError::CommandFailed(output.status));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn get_model_interface_cmd(model_path: &Path) -> Command {
+    let mut cmd = Command::new("minizinc");
+    cmd.arg(model_path);
+    cmd.arg("--model-interface-only");
+
+    cmd
 }

@@ -1,5 +1,5 @@
 use crate::args::{Args, DebugVerbosityLevel};
-use crate::model_parser::{ModelParseError, ObjectiveType, insert_objective, parse_objective_type};
+use crate::model_parser::{ModelParseError, ObjectiveType, get_objective_type, insert_objective};
 use crate::scheduler::{Schedule, ScheduleElement};
 use crate::solver_output::{Output, OutputParseError, Solution, Status};
 use crate::{mzn_to_fzn, solver_output};
@@ -97,8 +97,8 @@ pub struct SolverManager {
 }
 
 impl SolverManager {
-    pub fn new(args: Args) -> std::result::Result<Self, Error> {
-        let objective_type = parse_objective_type(&args.model)?;
+    pub async fn new(args: Args) -> std::result::Result<Self, Error> {
+        let objective_type = get_objective_type(&args.model).await?;
         let (tx, rx) = mpsc::unbounded_channel::<Msg>();
         let solver_to_pid = Arc::new(Mutex::new(HashMap::new()));
 
