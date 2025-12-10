@@ -1,8 +1,8 @@
 use crate::args::{Args, DebugVerbosityLevel};
-use crate::model_parser::{ModelParseError, ObjectiveType, parse_objective_type};
-use crate::mzn_to_fzn;
+use crate::model_parser::{ModelParseError, ObjectiveType, insert_objective, parse_objective_type};
 use crate::scheduler::{Schedule, ScheduleElement};
 use crate::solver_output::{Output, OutputParseError, Solution, Status};
+use crate::{mzn_to_fzn, solver_output};
 use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -127,12 +127,13 @@ impl SolverManager {
                 Msg::Solution(s) => {
                     if objective_type.is_better(objective, s.objective) {
                         objective = Some(s.objective);
-                        println!("{}", s.solution);
+                        println!("{}", s.solution.trim_end());
+                        println!("{}", solver_output::dzn::SOLUTION_TERMINATOR);
                     }
                 }
-                Msg::Status(s) => {
-                    println!("{:?}", s);
-                    if matches!(s, Status::OptimalSolution) {
+                Msg::Status(status) => {
+                    if status != Status::Unknown {
+                        println!("{}", status.to_dzn_string());
                         break;
                     }
                 }

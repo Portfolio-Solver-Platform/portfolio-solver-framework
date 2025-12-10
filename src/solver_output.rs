@@ -1,7 +1,8 @@
-use std::fmt;
+pub mod dzn;
 
 use crate::args::DebugVerbosityLevel;
 use serde_json::{Map, Value};
+use std::fmt;
 
 #[derive(Debug)]
 pub enum Output {
@@ -52,12 +53,6 @@ impl fmt::Display for OutputParseError {
 }
 
 impl Output {
-    const SOLUTION_TERMINATOR: &str = "----------";
-    const DONE_TERMINATOR: &str = "==========";
-    const UNSATISFIABLE_TERMINATOR: &str = "=====UNSATISFIABLE=====";
-    const UNBOUNDED_TERMINATOR: &str = "=====UNBOUNDED=====";
-    const UNKNOWN_TERMINATOR: &str = "=====UNKNOWN=====";
-
     pub fn parse(output: &str, verbosity: DebugVerbosityLevel) -> Result<Self, OutputParseError> {
         let Value::Object(json) = serde_json::from_str(output)? else {
             return Err(OutputParseError::Field(
