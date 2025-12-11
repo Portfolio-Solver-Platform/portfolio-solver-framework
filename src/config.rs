@@ -1,3 +1,4 @@
+#[derive(Debug, Copy, Clone)]
 pub struct Config {
     pub dynamic_schedule_interval: u64,
     pub memory_enforcer_interval: u64,

@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::mzn_to_fzn::convert_mzn_to_fzn;
-use crate::scheduler::{Schedule, ScheduleElement, Scheduler};
+use crate::scheduler::{Portfolio, Schedule, Scheduler, SolverInfo};
 use crate::{ai::Ai, args::Args};
 use tokio::time::{Duration, sleep};
 
@@ -52,7 +52,7 @@ pub async fn sunny(args: Args, mut ai: impl Ai, config: Config) {
     }
 }
 
-fn static_schedule(cores: usize) -> Schedule {
+fn static_schedule(cores: usize) -> Portfolio {
     // let solvers = vec![
     //     "picat".to_string(),
     //     "gecode".to_string(),
@@ -67,16 +67,16 @@ fn static_schedule(cores: usize) -> Schedule {
     // }
     // schedule
     vec![
-        ScheduleElement::new(0, "coinbc".to_string(), 1),
-        ScheduleElement::new(1, "gecode".to_string(), 1),
-        ScheduleElement::new(2, "picat".to_string(), 1),
-        ScheduleElement::new(3, "cp-sat".to_string(), 1),
-        ScheduleElement::new(4, "chuffed".to_string(), 1),
-        ScheduleElement::new(5, "yuck".to_string(), 1),
-        // ScheduleElement::new( "xpress".to_string(), cores / 10),
-        // ScheduleElement::new( "scip".to_string(), cores / 10),
-        // ScheduleElement::new( "highs".to_string(), cores / 10),
-        // ScheduleElement::new( "gurobi".to_string(), cores / 10),
-        // ScheduleElement::new("coinbc".to_string(), cores / 2),
+        SolverInfo::new("coinbc".to_string(), 1),
+        SolverInfo::new("gecode".to_string(), 1),
+        SolverInfo::new("picat".to_string(), 1),
+        SolverInfo::new("cp-sat".to_string(), 1),
+        SolverInfo::new("chuffed".to_string(), 1),
+        SolverInfo::new("yuck".to_string(), 1),
+        // SolverInfo::new( "xpress".to_string(), cores / 10),
+        // SolverInfo::new( "scip".to_string(), cores / 10),
+        // SolverInfo::new( "highs".to_string(), cores / 10),
+        // SolverInfo::new( "gurobi".to_string(), cores / 10),
+        // SolverInfo::new("coinbc".to_string(), cores / 2),
     ]
 }

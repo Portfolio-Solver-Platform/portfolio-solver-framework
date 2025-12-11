@@ -159,11 +159,11 @@ impl SolverManager {
     async fn start_solver(&self, elem: &ScheduleElement) -> Result<()> {
         let fzn = self
             .mzn_to_fzn
-            .convert(&self.args.model, self.args.data.as_deref(), &elem.solver)
+            .convert(&self.args.model, self.args.data.as_deref(), &elem.info.name)
             .await?;
 
         let mut cmd = Command::new("minizinc");
-        cmd.arg("--solver").arg(&elem.solver);
+        cmd.arg("--solver").arg(&elem.info.name);
         cmd.arg(fzn);
 
         cmd.arg("-i");
@@ -180,7 +180,7 @@ impl SolverManager {
         // }
         // cmd.arg("-f");
 
-        cmd.arg("-p").arg(elem.cores.to_string());
+        cmd.arg("-p").arg(elem.info.cores.to_string());
 
         #[cfg(unix)]
         cmd.process_group(0); // let OS give it a group process id
@@ -208,7 +208,7 @@ impl SolverManager {
         tokio::spawn(async move { Self::handle_solver_stderr(stderr, verbosity_stderr).await });
 
         let solver_to_pid_clone = self.solver_to_pid.clone();
-        let solver_name = elem.solver.clone();
+        let solver_name = elem.info.name.clone();
         let solver_id = elem.id;
         let verbosity_wait = self.args.debug_verbosity;
 
