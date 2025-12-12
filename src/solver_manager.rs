@@ -295,46 +295,34 @@ impl SolverManager {
         let mut lines = reader.lines();
         let mut parser = solver_output::Parser::new(verbosity);
 
-        // TODO:
-        // while let Some(line) = lines.next_line().await.map_err(|err| {
-        // }) {
-        // }
-
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    let output = match parser.next_line(&line) {
-                        Ok(o) => o,
-                        Err(e) => {
-                            if verbosity >= DebugVerbosityLevel::Error {
-                                eprintln!("Error parsing solver output: {:?}", e);
-                            }
-                            continue;
-                        }
-                    };
-                    let Some(output) = output else {
-                        continue;
-                    };
-
-                    let msg = match output {
-                        Output::Solution(solution) => Msg::Solution(solution),
-                        Output::Status(status) => Msg::Status(status),
-                    };
-
-                    if let Err(e) = tx.send(msg) {
-                        if verbosity >= DebugVerbosityLevel::Error {
-                            eprintln!("Could not send message, receiver dropped: {}", e);
-                        }
-                        break;
-                    }
-                }
-                Ok(None) => break, // EOF
+        while let Ok(Some(line)) = lines.next_line().await.map_err(|err| {
+            if verbosity >= DebugVerbosityLevel::Error {
+                eprintln!("Error reading solver stdout: {err}");
+            }
+        }) {
+            let output = match parser.next_line(&line) {
+                Ok(o) => o,
                 Err(e) => {
                     if verbosity >= DebugVerbosityLevel::Error {
-                        eprintln!("Error reading solver stdout: {}", e);
+                        eprintln!("Error parsing solver output: {e}");
                     }
-                    break;
+                    continue;
                 }
+            };
+            let Some(output) = output else {
+                continue;
+            };
+
+            let msg = match output {
+                Output::Solution(solution) => Msg::Solution(solution),
+                Output::Status(status) => Msg::Status(status),
+            };
+
+            if let Err(e) = tx.send(msg) {
+                if verbosity >= DebugVerbosityLevel::Error {
+                    eprintln!("Could not send message, receiver dropped: {}", e);
+                }
+                break;
             }
         }
 
