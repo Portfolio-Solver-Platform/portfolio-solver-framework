@@ -1,7 +1,7 @@
 use crate::args::{Args, DebugVerbosityLevel};
-use crate::model_parser::{ModelParseError, ObjectiveType, get_objective_type, insert_objective};
-use crate::scheduler::{Schedule, ScheduleElement};
-use crate::solver_output::{Output, OutputParseError, Solution, Status};
+use crate::model_parser::{ModelParseError, ObjectiveType, get_objective_type};
+use crate::scheduler::ScheduleElement;
+use crate::solver_output::{Output, Solution, Status};
 use crate::{mzn_to_fzn, solver_output};
 use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
@@ -24,7 +24,7 @@ pub enum Error {
     KillTree(kill_tree::Error),
     InvalidSolver(String),
     Io(std::io::Error),
-    OutputParseError(OutputParseError),
+    OutputParseError(solver_output::Error),
     ModelParse(ModelParseError),
     FznConversion(mzn_to_fzn::ConversionError),
     UseOfOznBeforeCompilation,
@@ -49,8 +49,8 @@ impl From<kill_tree::Error> for Error {
     }
 }
 
-impl From<OutputParseError> for Error {
-    fn from(value: OutputParseError) -> Self {
+impl From<solver_output::Error> for Error {
+    fn from(value: solver_output::Error) -> Self {
         Error::OutputParseError(value)
     }
 }
@@ -71,6 +71,9 @@ impl std::fmt::Display for Error {
             Error::ModelParse(e) => write!(f, "model parse error: {:?}", e),
             Error::FznConversion(e) => {
                 write!(f, "failed to convert mzn to fzn: {e:?}")
+            }
+            Error::UseOfOznBeforeCompilation => {
+                write!(f, "ozn file was used before it was compiled")
             }
         }
     }
@@ -102,7 +105,7 @@ pub struct SolverManager {
 struct PipeCommand {
     pub left: Child,
     pub right: Child,
-    pub pipe: JoinHandle<std::result::Result<u64, tokio::io::Error>>,
+    pub pipe: JoinHandle<std::io::Result<u64>>,
 }
 
 impl SolverManager {
@@ -147,7 +150,6 @@ impl SolverManager {
                             *guard = Some(s.objective);
                         }
                         println!("{}", s.solution.trim_end());
-                        println!("{}", solver_output::dzn::SOLUTION_TERMINATOR);
                     }
                 }
                 Msg::Status(status) => {
@@ -163,37 +165,6 @@ impl SolverManager {
             .await
             .expect("could not kill all solvers");
         std::process::exit(0);
-    }
-
-    async fn spawn_solve_commands(&self, solver_name: &str, cores: usize) -> Result<SolveCommand> {
-        let fzn = self
-            .mzn_to_fzn
-            .convert(&self.args.model, self.args.data.as_deref(), solver_name)
-            .await?;
-
-        let mut fzn_child = self
-            .get_fzn_command(&fzn, solver_name, cores)
-            .await?
-            .stdout(Stdio::piped())
-            .spawn()?;
-
-        let mut ozn_child = self
-            .get_ozn_command()
-            .await?
-            .stdin(Stdio::piped())
-            .spawn()?;
-
-        let mut fzn_stdout = fzn_child.stdout.take().expect("fzn stdout not captured");
-        let mut ozn_stdin = ozn_child.stdin.take().expect("ozn stdin not captured");
-
-        let pipe_task =
-            tokio::spawn(async move { tokio::io::copy(&mut fzn_stdout, &mut ozn_stdin).await });
-
-        Ok(SolveCommand {
-            fzn: fzn_child,
-            ozn: ozn_child,
-            pipe: pipe_task,
-        })
     }
 
     async fn get_fzn_command(
@@ -263,28 +234,30 @@ impl SolverManager {
         ozn_cmd.stderr(Stdio::piped());
 
         let PipeCommand {
-            left: fzn,
-            right: ozn,
+            left: mut fzn,
+            right: mut ozn,
             pipe,
         } = pipe(fzn_cmd, ozn_cmd).await?;
 
-        let pid = child.id().expect("Child has no PID");
+        let pid = fzn.id().expect("Child has no PID");
         {
             let mut map = self.solver_to_pid.lock().await;
             map.insert(elem.id, pid);
         }
 
-        let stdout = child.stdout.take().expect("Failed stdout");
-        let stderr = child.stderr.take().expect("Failed stderr");
+        let ozn_stdout = ozn.stdout.take().expect("Failed to take ozn stdout");
+        let ozn_stderr = ozn.stderr.take().expect("Failed to take ozn stderr");
+        let fzn_stderr = fzn.stderr.take().expect("Failed to take fzt stderr");
 
         let tx_clone = self.tx.clone();
         let verbosity = self.args.debug_verbosity;
         tokio::spawn(async move {
-            Self::handle_solver_stdout(stdout, tx_clone, verbosity).await;
+            Self::handle_solver_stdout(ozn_stdout, pipe, tx_clone, verbosity).await;
         });
 
         let verbosity_stderr = self.args.debug_verbosity;
-        tokio::spawn(async move { Self::handle_solver_stderr(stderr, verbosity_stderr).await });
+        tokio::spawn(async move { Self::handle_solver_stderr(fzn_stderr, verbosity_stderr).await });
+        tokio::spawn(async move { Self::handle_solver_stderr(ozn_stderr, verbosity_stderr).await });
 
         let solver_to_pid_clone = self.solver_to_pid.clone();
         let solver_name = elem.info.name.clone();
@@ -292,7 +265,7 @@ impl SolverManager {
         let verbosity_wait = self.args.debug_verbosity;
 
         tokio::spawn(async move {
-            match child.wait().await {
+            match fzn.wait().await {
                 Ok(status) if !status.success() => {
                     if verbosity_wait >= DebugVerbosityLevel::Info {
                         eprintln!("Solver '{}' exited with status: {}", solver_name, status);
@@ -314,11 +287,13 @@ impl SolverManager {
 
     async fn handle_solver_stdout(
         stdout: tokio::process::ChildStdout,
+        pipe: JoinHandle<std::io::Result<u64>>,
         tx: tokio::sync::mpsc::UnboundedSender<Msg>,
         verbosity: DebugVerbosityLevel,
     ) {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
+        let mut parser = solver_output::Parser::new(verbosity);
 
         // TODO:
         // while let Some(line) = lines.next_line().await.map_err(|err| {
@@ -328,7 +303,7 @@ impl SolverManager {
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    let output = match Output::parse(&line, verbosity) {
+                    let output = match parser.next_line(&line) {
                         Ok(o) => o,
                         Err(e) => {
                             if verbosity >= DebugVerbosityLevel::Error {
@@ -337,8 +312,11 @@ impl SolverManager {
                             continue;
                         }
                     };
+                    let Some(output) = output else {
+                        continue;
+                    };
+
                     let msg = match output {
-                        Output::Ignore => continue,
                         Output::Solution(solution) => Msg::Solution(solution),
                         Output::Status(status) => Msg::Status(status),
                     };
@@ -356,6 +334,15 @@ impl SolverManager {
                         eprintln!("Error reading solver stdout: {}", e);
                     }
                     break;
+                }
+            }
+        }
+
+        match pipe.await {
+            Ok(_) => {}
+            Err(e) => {
+                if verbosity >= DebugVerbosityLevel::Error {
+                    eprintln!("Error piping from fzn to ozn: {e}");
                 }
             }
         }

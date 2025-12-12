@@ -57,7 +57,7 @@ impl CachedConverter {
             .insert(solver_name.to_owned(), conversion.fzn.clone());
 
         if let Some(ozn) = conversion.ozn {
-            self.set_ozn_file(ozn);
+            self.set_ozn_file(ozn).await;
         }
 
         Ok(conversion.fzn)
@@ -168,7 +168,7 @@ fn get_mzn_to_fzn_cmd(
 
     match ozn_result_path {
         Some(ozn_result_path) => {
-            cmd.arg("ozn");
+            cmd.arg("--ozn");
             cmd.arg(ozn_result_path);
         }
         None => {
