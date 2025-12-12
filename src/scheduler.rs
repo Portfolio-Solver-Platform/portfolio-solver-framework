@@ -1,6 +1,7 @@
 use crate::{
     args::{Args, DebugVerbosityLevel},
     config::Config,
+    model_parser::ObjectiveValue,
     solver_manager::{Error, SolverManager},
 };
 use std::collections::{HashMap, HashSet};
@@ -31,11 +32,16 @@ pub type Portfolio = Vec<SolverInfo>;
 pub struct SolverInfo {
     pub name: String,
     pub cores: usize,
+    pub objective: Option<ObjectiveValue>,
 }
 
 impl SolverInfo {
     pub fn new(name: String, cores: usize) -> Self {
-        Self { name, cores }
+        Self {
+            name,
+            cores,
+            objective: None,
+        }
     }
 }
 
@@ -51,7 +57,7 @@ struct MemoryEnforcerState {
     system: System,
     memory_limit: u64, // In bytes (0 = use system total)
     next_solver_id: usize,
-    prev_objective: Option<f64>,
+    prev_objective: Option<ObjectiveValue>,
     config: Config,
     debug_verbosity: DebugVerbosityLevel,
 }
@@ -323,14 +329,14 @@ impl Scheduler {
         }
         if new_objective != state.prev_objective {
             state.prev_objective = new_objective;
-            self.solver_manager.stop_all_solvers().await.unwrap();
-            // insert new objective bound
+            self.solver_manager.stop_all_solvers().await.unwrap(); //Todo fix
             state.suspended_solvers.clear();
             state.running_solvers.clear();
-
             let schedule = Self::assign_ids(portfolio, &mut state);
 
-            self.solver_manager.start_solvers(&schedule).await?;
+            self.solver_manager
+                .start_solvers(&schedule, new_objective)
+                .await?;
             state.running_solvers = schedule
                 .into_iter()
                 .map(|elem| (elem.id, elem.info))
@@ -349,7 +355,9 @@ impl Scheduler {
             self.solver_manager
                 .resume_solvers(&changes.to_resume)
                 .await?;
-            self.solver_manager.start_solvers(&changes.to_start).await
+            self.solver_manager
+                .start_solvers(&changes.to_start, state.prev_objective)
+                .await
         }
     }
 

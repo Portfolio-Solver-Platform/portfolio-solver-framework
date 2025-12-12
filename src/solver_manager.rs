@@ -1,5 +1,7 @@
 use crate::args::{Args, DebugVerbosityLevel};
-use crate::model_parser::{ModelParseError, ObjectiveType, get_objective_type};
+use crate::model_parser::{
+    ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type, insert_objective,
+};
 use crate::scheduler::ScheduleElement;
 use crate::solver_output::{Output, Solution, Status};
 use crate::{mzn_to_fzn, solver_output};
@@ -99,7 +101,8 @@ pub struct SolverManager {
     solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
     args: Args,
     mzn_to_fzn: mzn_to_fzn::CachedConverter,
-    best_objective: Arc<RwLock<Option<f64>>>,
+    best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
+    objective_type: ObjectiveType,
 }
 
 struct PipeCommand {
@@ -129,6 +132,7 @@ impl SolverManager {
             mzn_to_fzn: mzn_to_fzn::CachedConverter::new(args.debug_verbosity),
             args,
             best_objective,
+            objective_type,
         })
     }
 
@@ -136,9 +140,9 @@ impl SolverManager {
         mut rx: mpsc::UnboundedReceiver<Msg>,
         solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
         objective_type: ObjectiveType,
-        shared_objective: Arc<RwLock<Option<f64>>>,
+        shared_objective: Arc<RwLock<Option<ObjectiveValue>>>,
     ) {
-        let mut objective: Option<f64> = None;
+        let mut objective: Option<ObjectiveValue> = None;
 
         while let Some(output) = rx.recv().await {
             match output {
@@ -215,16 +219,34 @@ impl SolverManager {
         }
     }
 
-    async fn start_solver(&self, elem: &ScheduleElement) -> Result<()> {
+    async fn start_solver(
+        &self,
+        elem: &ScheduleElement,
+        objective: Option<ObjectiveValue>,
+    ) -> Result<()> {
         let solver_name = &elem.info.name;
         let cores = elem.info.cores;
 
-        let fzn = self
+        let fzn_original_path = self
             .mzn_to_fzn
             .convert(&self.args.model, self.args.data.as_deref(), solver_name)
             .await?;
 
-        let mut fzn_cmd = self.get_fzn_command(&fzn, solver_name, cores).await?;
+        let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
+            if let Ok(new_temp_file) =
+                insert_objective(&fzn_original_path, &self.objective_type, obj)
+            {
+                (new_temp_file.path().to_path_buf(), Some(new_temp_file))
+            } else {
+                (fzn_original_path, None)
+            }
+        } else {
+            (fzn_original_path, None)
+        };
+
+        let mut fzn_cmd = self
+            .get_fzn_command(&fzn_final_path, solver_name, cores)
+            .await?;
         #[cfg(unix)]
         fzn_cmd.process_group(0); // let OS give it a group process id
         fzn_cmd.stderr(Stdio::piped());
@@ -265,6 +287,7 @@ impl SolverManager {
         let verbosity_wait = self.args.debug_verbosity;
 
         tokio::spawn(async move {
+            let _keep_alive = fzn_guard;
             match fzn.wait().await {
                 Ok(status) if !status.success() => {
                     if verbosity_wait >= DebugVerbosityLevel::Info {
@@ -293,7 +316,7 @@ impl SolverManager {
     ) {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
-        let mut parser = solver_output::Parser::new(verbosity);
+        let mut parser = solver_output::Parser::new();
 
         while let Ok(Some(line)) = lines.next_line().await.map_err(|err| {
             if verbosity >= DebugVerbosityLevel::Error {
@@ -358,8 +381,11 @@ impl SolverManager {
     pub async fn start_solvers(
         &self,
         schedule: &[ScheduleElement],
+        objective: Option<ObjectiveValue>,
     ) -> std::result::Result<(), Vec<Error>> {
-        let futures = schedule.iter().map(|elem| self.start_solver(elem));
+        let futures = schedule
+            .iter()
+            .map(|elem| self.start_solver(elem, objective));
         let results = join_all(futures).await;
         let errors: Vec<Error> = results.into_iter().filter_map(Result::err).collect();
 
@@ -547,7 +573,7 @@ impl SolverManager {
         solver_mem
     }
 
-    pub async fn get_best_objective(&self) -> Option<f64> {
+    pub async fn get_best_objective(&self) -> Option<ObjectiveValue> {
         *self.best_objective.read().await
     }
 }
