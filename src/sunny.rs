@@ -24,6 +24,7 @@ pub async fn sunny(args: Args, ai: impl Ai, config: Config) {
     )
     .await
     .expect("failed to initially convert .mzn to .fzn");
+
     // let features = fzn_to_features(&fzn)
     //     .await
     //     .expect("if we fail to get features, we can't run the AI and thus can't recover");

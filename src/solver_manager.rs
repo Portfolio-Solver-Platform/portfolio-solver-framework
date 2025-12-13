@@ -96,9 +96,14 @@ enum Msg {
     Status(Status),
 }
 
+struct SolverProcess {
+    pid: u32,
+    best_objective: Option<ObjectiveValue>,
+}
+
 pub struct SolverManager {
     tx: mpsc::UnboundedSender<Msg>,
-    solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
+    solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
     args: Args,
     mzn_to_fzn: mzn_to_fzn::CachedConverter,
     best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
@@ -115,20 +120,20 @@ impl SolverManager {
     pub async fn new(args: Args) -> std::result::Result<Self, Error> {
         let objective_type = get_objective_type(&args.model).await?;
         let (tx, rx) = mpsc::unbounded_channel::<Msg>();
-        let solver_to_pid = Arc::new(Mutex::new(HashMap::new()));
+        let solvers = Arc::new(Mutex::new(HashMap::new()));
 
-        cleanup_handler(solver_to_pid.clone());
-        let solver_to_pid_clone = solver_to_pid.clone();
+        cleanup_handler(solvers.clone());
+        let solvers_clone = solvers.clone();
         let best_objective = Arc::new(RwLock::new(None));
 
         let shared_objective = best_objective.clone();
         tokio::spawn(async move {
-            Self::receiver(rx, solver_to_pid_clone, objective_type, shared_objective).await
+            Self::receiver(rx, solvers_clone, objective_type, shared_objective).await
         });
 
         Ok(Self {
             tx,
-            solver_to_pid,
+            solvers,
             mzn_to_fzn: mzn_to_fzn::CachedConverter::new(args.debug_verbosity),
             args,
             best_objective,
@@ -138,7 +143,7 @@ impl SolverManager {
 
     async fn receiver(
         mut rx: mpsc::UnboundedReceiver<Msg>,
-        solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
+        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         objective_type: ObjectiveType,
         shared_objective: Arc<RwLock<Option<ObjectiveValue>>>,
     ) {
@@ -165,7 +170,7 @@ impl SolverManager {
             }
         }
 
-        Self::_stop_all_solvers(solver_to_pid.clone())
+        Self::_stop_all_solvers(solvers.clone())
             .await
             .expect("could not kill all solvers");
         std::process::exit(0);
@@ -262,9 +267,16 @@ impl SolverManager {
         } = pipe(fzn_cmd, ozn_cmd).await?;
 
         let pid = fzn.id().expect("Child has no PID");
+
         {
-            let mut map = self.solver_to_pid.lock().await;
-            map.insert(elem.id, pid);
+            let mut map = self.solvers.lock().await;
+            map.insert(
+                elem.id,
+                SolverProcess {
+                    pid,
+                    best_objective: objective,
+                },
+            );
         }
 
         let ozn_stdout = ozn.stdout.take().expect("Failed to take ozn stdout");
@@ -272,18 +284,29 @@ impl SolverManager {
         let fzn_stderr = fzn.stderr.take().expect("Failed to take fzt stderr");
 
         let tx_clone = self.tx.clone();
+        let solvers_clone_stdout = self.solvers.clone();
+        let solver_id = elem.id;
+        let objective_type = self.objective_type;
         let verbosity = self.args.debug_verbosity;
         tokio::spawn(async move {
-            Self::handle_solver_stdout(ozn_stdout, pipe, tx_clone, verbosity).await;
+            Self::handle_solver_stdout(
+                ozn_stdout,
+                pipe,
+                tx_clone,
+                solver_id,
+                solvers_clone_stdout,
+                objective_type,
+                verbosity,
+            )
+            .await;
         });
 
         let verbosity_stderr = self.args.debug_verbosity;
         tokio::spawn(async move { Self::handle_solver_stderr(fzn_stderr, verbosity_stderr).await });
         tokio::spawn(async move { Self::handle_solver_stderr(ozn_stderr, verbosity_stderr).await });
 
-        let solver_to_pid_clone = self.solver_to_pid.clone();
+        let solvers_clone = self.solvers.clone();
         let solver_name = elem.info.name.clone();
-        let solver_id = elem.id;
         let verbosity_wait = self.args.debug_verbosity;
 
         tokio::spawn(async move {
@@ -301,7 +324,7 @@ impl SolverManager {
                 }
                 _ => {}
             }
-            let mut map = solver_to_pid_clone.lock().await;
+            let mut map = solvers_clone.lock().await;
             map.remove(&solver_id);
         });
 
@@ -312,11 +335,19 @@ impl SolverManager {
         stdout: tokio::process::ChildStdout,
         pipe: JoinHandle<std::io::Result<u64>>,
         tx: tokio::sync::mpsc::UnboundedSender<Msg>,
+        solver_id: usize,
+        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
+        objective_type: ObjectiveType,
         verbosity: DebugVerbosityLevel,
     ) {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
         let mut parser = solver_output::Parser::new();
+
+        let mut local_best: Option<ObjectiveValue> = {
+            let map = solvers.lock().await;
+            map.get(&solver_id).and_then(|s| s.best_objective)
+        };
 
         while let Ok(Some(line)) = lines.next_line().await.map_err(|err| {
             if verbosity >= DebugVerbosityLevel::Error {
@@ -327,17 +358,27 @@ impl SolverManager {
                 Ok(o) => o,
                 Err(e) => {
                     if verbosity >= DebugVerbosityLevel::Error {
-                        eprintln!("Error parsing solver output: {e}");
+                        eprintln!("Error parsing solver output: {:?}", e);
                     }
                     continue;
                 }
             };
+
             let Some(output) = output else {
                 continue;
             };
 
             let msg = match output {
-                Output::Solution(solution) => Msg::Solution(solution),
+                Output::Solution(solution) => {
+                    if objective_type.is_better(local_best, solution.objective) {
+                        local_best = Some(solution.objective);
+                        let mut map = solvers.lock().await;
+                        if let Some(state) = map.get_mut(&solver_id) {
+                            state.best_objective = local_best;
+                        }
+                    }
+                    Msg::Solution(solution)
+                }
                 Output::Status(status) => Msg::Status(status),
             };
 
@@ -398,14 +439,14 @@ impl SolverManager {
 
     // could probably be optimized to be able to send multiple signals to a process at a time, instead of traversing it twice
     async fn send_signal_to_solver(
-        solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
+        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         id: usize,
         signal: String,
     ) -> std::result::Result<(), Error> {
         let pid = {
-            let map = solver_to_pid.lock().await;
+            let map = solvers.lock().await;
             match map.get(&id) {
-                Some(&p) => p,
+                Some(state) => state.pid,
                 None => return Err(Error::InvalidSolver(format!("Solver {id} not running"))),
             }
         };
@@ -429,13 +470,13 @@ impl SolverManager {
     }
 
     async fn send_signal_to_solvers(
-        solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
+        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         ids: &[usize],
         signal: &str,
     ) -> std::result::Result<(), Vec<Error>> {
         let futures = ids
             .iter()
-            .map(|id| Self::send_signal_to_solver(solver_to_pid.clone(), *id, signal.to_string()));
+            .map(|id| Self::send_signal_to_solver(solvers.clone(), *id, signal.to_string()));
         let results = join_all(futures).await;
         let errors: Vec<Error> = results.into_iter().filter_map(|res| res.err()).collect();
 
@@ -447,79 +488,76 @@ impl SolverManager {
     }
 
     async fn send_signal_to_all_solvers(
-        solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
+        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         signal: &str,
     ) -> std::result::Result<(), Vec<Error>> {
-        let ids: Vec<usize> = { solver_to_pid.lock().await.keys().cloned().collect() };
-        Self::send_signal_to_solvers(solver_to_pid.clone(), &ids, signal).await
+        let ids: Vec<usize> = { solvers.lock().await.keys().cloned().collect() };
+        Self::send_signal_to_solvers(solvers.clone(), &ids, signal).await
     }
 
     pub async fn suspend_solver(&self, id: usize) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(self.solver_to_pid.clone(), id, String::from(SUSPEND_SIGNAL))
-            .await
+        Self::send_signal_to_solver(self.solvers.clone(), id, String::from(SUSPEND_SIGNAL)).await
     }
 
     pub async fn suspend_solvers(&self, ids: &[usize]) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(self.solver_to_pid.clone(), ids, SUSPEND_SIGNAL).await
+        Self::send_signal_to_solvers(self.solvers.clone(), ids, SUSPEND_SIGNAL).await
     }
 
     pub async fn suspend_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_all_solvers(self.solver_to_pid.clone(), SUSPEND_SIGNAL).await
+        Self::send_signal_to_all_solvers(self.solvers.clone(), SUSPEND_SIGNAL).await
     }
 
     pub async fn resume_solver(&self, id: usize) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(self.solver_to_pid.clone(), id, String::from(RESUME_SIGNAL))
-            .await
+        Self::send_signal_to_solver(self.solvers.clone(), id, String::from(RESUME_SIGNAL)).await
     }
 
     pub async fn resume_solvers(&self, ids: &[usize]) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(self.solver_to_pid.clone(), ids, RESUME_SIGNAL).await
+        Self::send_signal_to_solvers(self.solvers.clone(), ids, RESUME_SIGNAL).await
     }
 
     pub async fn resume_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_all_solvers(self.solver_to_pid.clone(), RESUME_SIGNAL).await
+        Self::send_signal_to_all_solvers(self.solvers.clone(), RESUME_SIGNAL).await
     }
 
     async fn _stop_solver(
-        solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
+        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         id: usize,
     ) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(solver_to_pid.clone(), id, String::from(KILL_SIGNAL)).await?;
-        let _ = Self::send_signal_to_solver(solver_to_pid.clone(), id, String::from(RESUME_SIGNAL))
-            .await; // we ignore since the process might already be dead
+        Self::send_signal_to_solver(solvers.clone(), id, String::from(KILL_SIGNAL)).await?;
+        let _ = Self::send_signal_to_solver(solvers.clone(), id, String::from(RESUME_SIGNAL)).await; // we ignore since the process might already be dead
         Ok(())
     }
 
     async fn _stop_solvers(
-        solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
+        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         ids: &[usize],
     ) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(solver_to_pid.clone(), ids, KILL_SIGNAL).await?;
-        let _ = Self::send_signal_to_solvers(solver_to_pid.clone(), ids, RESUME_SIGNAL).await; // we ignore since the process might already be dead
+        Self::send_signal_to_solvers(solvers.clone(), ids, KILL_SIGNAL).await?;
+        let _ = Self::send_signal_to_solvers(solvers.clone(), ids, RESUME_SIGNAL).await; // we ignore since the process might already be dead
         Ok(())
     }
 
     async fn _stop_all_solvers(
-        solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>,
+        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
     ) -> std::result::Result<(), Vec<Error>> {
         let ids: Vec<usize> = {
-            let map = solver_to_pid.lock().await;
+            let map = solvers.lock().await;
             map.keys().copied().collect()
         };
 
-        Self::_stop_solvers(solver_to_pid.clone(), &ids).await
+        Self::_stop_solvers(solvers.clone(), &ids).await
     }
 
     pub async fn stop_solver(&self, id: usize) -> std::result::Result<(), Error> {
-        Self::_stop_solver(self.solver_to_pid.clone(), id).await
+        Self::_stop_solver(self.solvers.clone(), id).await
     }
 
     pub async fn stop_solvers(&self, ids: &[usize]) -> std::result::Result<(), Vec<Error>> {
-        Self::_stop_solvers(self.solver_to_pid.clone(), ids).await
+        Self::_stop_solvers(self.solvers.clone(), ids).await
     }
 
     pub async fn stop_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::_stop_all_solvers(self.solver_to_pid.clone()).await
+        Self::_stop_all_solvers(self.solvers.clone()).await
     }
 
     fn get_process_tree_memory(system: &System, root_pid: u32) -> u64 {
@@ -542,16 +580,16 @@ impl SolverManager {
     }
 
     pub async fn active_solver_ids(&self) -> HashSet<usize> {
-        self.solver_to_pid.lock().await.keys().copied().collect()
+        self.solvers.lock().await.keys().copied().collect()
     }
 
     pub async fn solvers_sorted_by_mem(&self, ids: &[usize], system: &System) -> Vec<(u64, usize)> {
         let solvers: Vec<(u32, usize)> = {
-            let map = self.solver_to_pid.lock().await;
+            let map = self.solvers.lock().await;
             let mut solvers: Vec<(u32, usize)> = Vec::new();
             for id in ids {
                 match map.get(id) {
-                    Some(pid) => solvers.push((*pid, *id)),
+                    Some(state) => solvers.push((state.pid, *id)),
                     None => {
                         if self.args.debug_verbosity >= DebugVerbosityLevel::Warning {
                             eprintln!(
@@ -576,23 +614,37 @@ impl SolverManager {
     pub async fn get_best_objective(&self) -> Option<ObjectiveValue> {
         *self.best_objective.read().await
     }
+
+    pub async fn get_solver_objectives(&self) -> HashMap<usize, Option<ObjectiveValue>> {
+        self.solvers
+            .lock()
+            .await
+            .iter()
+            .map(|(id, state)| (*id, state.best_objective))
+            .collect()
+    }
+
+    pub fn objective_type(&self) -> ObjectiveType {
+        self.objective_type
+    }
 }
 
-fn cleanup_handler(solver_to_pid: Arc<Mutex<HashMap<usize, u32>>>) {
-    let solver_to_pid_clone = solver_to_pid.clone();
+fn cleanup_handler(solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>) {
+    let solvers_clone = solvers.clone();
 
     ctrlc::set_handler(move || {
-        let solver_to_pid_guard = solver_to_pid_clone.blocking_lock();
+        let solvers_guard = solvers_clone.blocking_lock();
 
-        for pid in solver_to_pid_guard.values() {
-            let _ = kill_tree::blocking::kill_tree(*pid);
+        for state in solvers_guard.values() {
+            let pid = state.pid;
+            let _ = kill_tree::blocking::kill_tree(pid);
 
             // Resume the stopped processes can receive kill signal
             let resume_config = kill_tree::Config {
                 signal: String::from(RESUME_SIGNAL),
                 ..Default::default()
             };
-            let _ = kill_tree::blocking::kill_tree_with_config(*pid, &resume_config);
+            let _ = kill_tree::blocking::kill_tree_with_config(pid, &resume_config);
         }
 
         std::process::exit(0);
