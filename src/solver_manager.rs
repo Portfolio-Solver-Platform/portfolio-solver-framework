@@ -176,12 +176,7 @@ impl SolverManager {
         std::process::exit(0);
     }
 
-    async fn get_fzn_command(
-        &self,
-        fzn_path: &Path,
-        solver_name: &str,
-        cores: usize,
-    ) -> Result<Command> {
+    fn get_fzn_command(&self, fzn_path: &Path, solver_name: &str, cores: usize) -> Command {
         let mut cmd = Command::new("minizinc");
         cmd.arg("--solver").arg(solver_name);
         cmd.arg(fzn_path);
@@ -199,28 +194,15 @@ impl SolverManager {
 
         cmd.arg("-p").arg(cores.to_string());
 
-        Ok(cmd)
+        cmd
     }
 
-    fn get_ozn_command(&self, solver_name: &str) -> Result<Command> {
+    fn get_ozn_command(&self, ozn_path: &Path) -> Command {
         let mut cmd = Command::new("minizinc");
         cmd.arg("--ozn-file");
+        cmd.arg(ozn_path);
 
-        let mut error = None;
-        self.mzn_to_fzn
-            .use_ozn_file(solver_name, |ozn| match ozn {
-                Some(ozn) => {
-                    cmd.arg(ozn);
-                }
-                None => {
-                    error = Some(Error::UseOfOznBeforeCompilation);
-                }
-            });
-
-        match error {
-            None => Ok(cmd),
-            Some(error) => Err(error),
-        }
+        cmd
     }
 
     async fn start_solver(
@@ -231,31 +213,29 @@ impl SolverManager {
         let solver_name = &elem.info.name;
         let cores = elem.info.cores;
 
-        let fzn_original_path = self
+        let conversion_paths = self
             .mzn_to_fzn
             .convert(&self.args.model, self.args.data.as_deref(), solver_name)
             .await?;
 
         let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
             if let Ok(new_temp_file) =
-                insert_objective(&fzn_original_path, &self.objective_type, obj)
+                insert_objective(&conversion_paths.fzn, &self.objective_type, obj)
             {
                 (new_temp_file.path().to_path_buf(), Some(new_temp_file))
             } else {
-                (fzn_original_path, None)
+                (conversion_paths.fzn, None)
             }
         } else {
-            (fzn_original_path, None)
+            (conversion_paths.fzn, None)
         };
 
-        let mut fzn_cmd = self
-            .get_fzn_command(&fzn_final_path, solver_name, cores)
-            .await?;
+        let mut fzn_cmd = self.get_fzn_command(&fzn_final_path, solver_name, cores);
         #[cfg(unix)]
         fzn_cmd.process_group(0); // let OS give it a group process id
         fzn_cmd.stderr(Stdio::piped());
 
-        let mut ozn_cmd = self.get_ozn_command(solver_name)?;
+        let mut ozn_cmd = self.get_ozn_command(&conversion_paths.ozn);
         ozn_cmd.stdout(Stdio::piped());
         ozn_cmd.stderr(Stdio::piped());
 

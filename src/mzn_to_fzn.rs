@@ -1,5 +1,5 @@
 use crate::args::DebugVerbosityLevel;
-use dashmap::DashMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -19,16 +19,20 @@ impl From<tokio::io::Error> for ConversionError {
 }
 
 pub struct CachedConverter {
-    fzn_cache: DashMap<String, PathBuf>,
-    ozn_cache: DashMap<String, PathBuf>,
+    cache: RwLock<HashMap<String, Conversion>>,
     debug_verbosity: DebugVerbosityLevel,
+}
+
+#[derive(Clone)]
+pub struct Conversion {
+    pub fzn: PathBuf,
+    pub ozn: PathBuf,
 }
 
 impl CachedConverter {
     pub fn new(debug_verbosity: DebugVerbosityLevel) -> Self {
         Self {
-            fzn_cache: DashMap::new(),
-            ozn_cache: DashMap::new(),
+            cache: RwLock::new(HashMap::new()),
             debug_verbosity,
         }
     }
@@ -38,55 +42,47 @@ impl CachedConverter {
         model: &Path,
         data: Option<&Path>,
         solver_name: &str,
-    ) -> Result<PathBuf, ConversionError> {
-        if let Some(fzn) = self.fzn_cache.get(solver_name) {
-            return Ok(fzn.clone());
+    ) -> Result<Conversion, ConversionError> {
+        // TODO: Avoid cloning by making a use_files function that implicitly converts if necessary
+        {
+            let cache = self.cache.read().await;
+            if let Some(conversion) = cache.get(solver_name) {
+                return Ok(conversion.clone());
+            }
         }
 
-        let conversion = convert_mzn(
-            model,
-            data,
-            solver_name,
-            true,
-            self.debug_verbosity,
-        )
-        .await?;
-        self.fzn_cache
-            .insert(solver_name.to_owned(), conversion.fzn.clone());
+        let conversion = convert_mzn(model, data, solver_name, self.debug_verbosity).await?;
+        let mut cache = self.cache.write().await;
+        cache.insert(solver_name.to_owned(), conversion.clone());
 
-        if let Some(ozn) = conversion.ozn {
-            self.ozn_cache.insert(solver_name.to_owned(), ozn);
-        }
-
-        Ok(conversion.fzn)
+        Ok(conversion)
     }
 
-    pub fn use_ozn_file(&self, solver_name: &str, f: impl FnOnce(Option<&Path>)) {
-        let path = self.ozn_cache.get(solver_name);
-        f(path.as_deref().map(|p| p.as_path()));
-    }
-}
-
-pub struct Conversion {
-    pub fzn: PathBuf,
-    pub ozn: Option<PathBuf>,
+    // pub async fn use_files(&self, solver_name: &str, f: impl FnOnce(&Conversion)) {
+    //     let conversion = self.cache.read().await.get(solver_name);
+    //     if let Some(conversion) = conversion {
+    //         f(conversion);
+    //     } else {
+    //         self.convert()
+    //     }
+    //     f(path.as_deref().map(|p| p));
+    // }
 }
 
 pub async fn convert_mzn(
     model: &Path,
     data: Option<&Path>,
     solver_name: &str,
-    output_ozn_file: bool,
     verbosity: DebugVerbosityLevel,
 ) -> Result<Conversion, ConversionError> {
     let fzn_file_path = get_new_model_file_name(model, solver_name);
-    let ozn_file_path = output_ozn_file.then(|| get_new_ozn_file_name(model, solver_name));
+    let ozn_file_path = get_new_ozn_file_name(model, solver_name);
     run_mzn_to_fzn_cmd(
         model,
         data,
         solver_name,
         &fzn_file_path,
-        ozn_file_path.as_deref(),
+        &ozn_file_path,
         verbosity,
     )
     .await?;
@@ -111,7 +107,7 @@ async fn run_mzn_to_fzn_cmd(
     data: Option<&Path>,
     solver_name: &str,
     fzn_result_path: &Path,
-    ozn_result_path: Option<&Path>,
+    ozn_result_path: &Path,
     verbosity: DebugVerbosityLevel,
 ) -> Result<(), ConversionError> {
     let mut cmd = get_mzn_to_fzn_cmd(model, data, solver_name, fzn_result_path, ozn_result_path);
@@ -143,7 +139,7 @@ fn get_mzn_to_fzn_cmd(
     data: Option<&Path>,
     solver_name: &str,
     fzn_result_path: &Path,
-    ozn_result_path: Option<&Path>,
+    ozn_result_path: &Path,
 ) -> Command {
     let mut cmd = Command::new("minizinc");
 
@@ -156,15 +152,8 @@ fn get_mzn_to_fzn_cmd(
     cmd.arg("-o").arg(fzn_result_path);
     cmd.args(["--output-objective", "--output-mode", "dzn"]);
 
-    match ozn_result_path {
-        Some(ozn_result_path) => {
-            cmd.arg("--ozn");
-            cmd.arg(ozn_result_path);
-        }
-        None => {
-            cmd.arg("--no-output-ozn");
-        }
-    }
+    cmd.arg("--ozn");
+    cmd.arg(ozn_result_path);
 
     cmd
 }
