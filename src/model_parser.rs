@@ -64,30 +64,22 @@ pub fn insert_objective(
     objective_type: &ObjectiveType,
     objective: ObjectiveValue,
 ) -> Result<NamedTempFile, ()> {
+    // NOTE: The FlatZinc grammar always ends with a "solve-item" and all statements end with a ';': https://docs.minizinc.dev/en/latest/fzn-spec.html#grammar
     // TODO: Optimise: don't read the entire file, but only read from the end.
     let content = fs::read_to_string(fzn_path).map_err(|_| ())?;
-    let content = content.trim();
-    let mut lines: Vec<_> = content.lines().collect();
+    let mut statements: Vec<_> = content.split(';').collect();
+    let solve_statement = statements.last().ok_or(())?.trim();
 
-    let solve_line = lines.last().ok_or(())?;
-    if !solve_line.starts_with("solve") {
+    if !solve_statement.starts_with("solve") {
         return Err(());
     }
 
-    let objective_name_rev: String = solve_line
-        .chars()
-        .rev()
-        .skip(1) // Skip the ';'
-        .take_while(|c| *c != ' ')
-        .collect();
-    let objective_name: String = objective_name_rev.chars().rev().collect();
-    let objective_constraint =
-        get_objective_constraint(objective_type, objective_name.as_str(), objective)?;
+    let objective_name = solve_statement.split_whitespace().next_back().ok_or(())?; // NOTE: split should never return an empty iterator
+    let objective_constraint = get_objective_constraint(objective_type, objective_name, objective)?;
 
-    lines.insert(lines.len() - 1, &objective_constraint);
+    statements.insert(statements.len() - 1, &objective_constraint);
 
-    let mut new_content = lines.join("\n"); // add back newline after trim
-    new_content.push('\n');
+    let new_content = statements.join(";"); // Add back ';' after split
 
     let mut file = tempfile::Builder::new()
         .suffix(".fzn")
