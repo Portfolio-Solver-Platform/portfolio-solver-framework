@@ -1,7 +1,7 @@
 use crate::{
     args::{Args, DebugVerbosityLevel},
     config::Config,
-    model_parser::ObjectiveValue,
+    model_parser::{ObjectiveType, ObjectiveValue},
     solver_manager::{Error, SolverManager},
 };
 use std::collections::{HashMap, HashSet};
@@ -45,6 +45,7 @@ impl SolverInfo {
     }
 }
 
+#[derive(Debug)]
 struct ScheduleChanges {
     to_start: Schedule,
     to_suspend: Vec<usize>,
@@ -329,36 +330,41 @@ impl Scheduler {
         }
         if new_objective != state.prev_objective {
             state.prev_objective = new_objective;
-            self.solver_manager.stop_all_solvers().await.unwrap(); //Todo fix
-            state.suspended_solvers.clear();
-            state.running_solvers.clear();
-            let schedule = Self::assign_ids(portfolio, &mut state);
 
-            self.solver_manager
-                .start_solvers(&schedule, new_objective)
-                .await?;
-            state.running_solvers = schedule
-                .into_iter()
-                .map(|elem| (elem.id, elem.info))
-                .collect();
-            Ok(())
-        } else {
-            let schedule = Self::assign_ids(portfolio, &mut state);
+            if let Some(obj) = new_objective {
+                let solver_objectives = self.solver_manager.get_solver_objectives().await;
+                let objective_type = self.solver_manager.objective_type();
+                println!("solver objectives: {:?}", solver_objectives);
+                let to_restart: Vec<usize> = solver_objectives
+                    .iter()
+                    .filter(|(_, best)| objective_type.is_better(**best, obj))
+                    .map(|(id, _)| *id)
+                    .collect();
 
-            let changes =
-                Self::categorize_schedule(schedule, &mut state, self.solver_manager.clone()).await;
-            Self::apply_changes_to_state(&mut state, &changes);
+                println!("to restart {:?}", to_restart);
+                self.solver_manager.stop_solvers(&to_restart).await?;
 
-            self.solver_manager
-                .suspend_solvers(&changes.to_suspend)
-                .await?;
-            self.solver_manager
-                .resume_solvers(&changes.to_resume)
-                .await?;
-            self.solver_manager
-                .start_solvers(&changes.to_start, state.prev_objective)
-                .await
+                for id in &to_restart {
+                    state.running_solvers.remove(id);
+                    state.suspended_solvers.remove(id);
+                }
+            }
         }
+
+        let schedule = Self::assign_ids(portfolio, &mut state);
+        let changes =
+            Self::categorize_schedule(schedule, &mut state, self.solver_manager.clone()).await;
+        Self::apply_changes_to_state(&mut state, &changes);
+        println!("changes: {:?}", changes);
+        self.solver_manager
+            .suspend_solvers(&changes.to_suspend)
+            .await?;
+        self.solver_manager
+            .resume_solvers(&changes.to_resume)
+            .await?;
+        self.solver_manager
+            .start_solvers(&changes.to_start, state.prev_objective)
+            .await
     }
 
     fn assign_ids(

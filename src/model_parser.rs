@@ -64,6 +64,7 @@ pub fn insert_objective(
     objective_type: &ObjectiveType,
     objective: ObjectiveValue,
 ) -> Result<NamedTempFile, ()> {
+    println!("INSERTING OBJECTIVE: {objective}");
     // TODO: Optimise: don't read the entire file, but only read from the end.
     let content = fs::read_to_string(fzn_path).map_err(|_| ())?;
     let content = content.trim();
@@ -86,7 +87,8 @@ pub fn insert_objective(
 
     lines.insert(lines.len() - 1, &objective_constraint);
 
-    let new_content = lines.join("\n");
+    let mut new_content = lines.join("\n"); // add back newline after trim
+    new_content.push('\n');
 
     let mut file = tempfile::Builder::new()
         .suffix(".fzn")
