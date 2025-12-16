@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::fzn_to_features::fzn_to_features;
 use crate::mzn_to_fzn::convert_mzn;
 use crate::scheduler::{Portfolio, Scheduler, SolverInfo};
 use crate::{ai::Ai, args::Args};
@@ -6,7 +7,7 @@ use tokio::time::{Duration, sleep};
 
 const FEATURES_SOLVER: &str = "gecode";
 
-pub async fn sunny(args: Args, ai: impl Ai, config: Config) {
+pub async fn sunny(args: Args, mut ai: impl Ai, config: Config) {
     let timer_duration = Duration::from_secs(config.dynamic_schedule_interval);
     let cores = args.cores.unwrap_or(2);
     let mut scheduler = Scheduler::new(&args, &config)
@@ -15,30 +16,24 @@ pub async fn sunny(args: Args, ai: impl Ai, config: Config) {
     scheduler.apply(static_schedule(cores)).await.unwrap(); // TODO: Maybe do this in another thread
 
     let mut timer = sleep(timer_duration);
-    // let fzn = convert_mzn(
-    //     &args.model,
-    //     args.data.as_deref(),
-    //     FEATURES_SOLVER,
-    //     false,
-    //     args.debug_verbosity,
-    // )
-    // .await
-    // .expect("failed to initially convert .mzn to .fzn");
+    let conversion = convert_mzn(
+        &args.model,
+        args.data.as_deref(),
+        FEATURES_SOLVER,
+        args.debug_verbosity,
+    )
+    .await
+    .expect("failed to initially convert .mzn to .fzn");
 
-    // let features = fzn_to_features(&fzn)
-    //     .await
-    //     .expect("if we fail to get features, we can't run the AI and thus can't recover");
+    let features = fzn_to_features(&conversion.fzn)
+        .await
+        .expect("if we fail to get features, we can't run the AI and thus can't recover");
 
     loop {
         timer.await;
-        // let schedule = ai.schedule(&vec![], cores);
-        // scheduler
-        //     .solver_manager
-        //     .suspend_all_solvers()
-        //     .await
-        //     .unwrap();
+        let schedule = ai.schedule(&features, cores).unwrap();
 
-        scheduler.apply(static_schedule(cores)).await.unwrap();
+        scheduler.apply(schedule).await.unwrap();
 
         timer = sleep(timer_duration);
     }
