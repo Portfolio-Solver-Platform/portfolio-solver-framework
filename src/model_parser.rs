@@ -60,7 +60,7 @@ impl ObjectiveType {
 }
 
 pub fn insert_objective(
-    fzn_path: &PathBuf,
+    fzn_path: &Path,
     objective_type: &ObjectiveType,
     objective: ObjectiveValue,
 ) -> Result<NamedTempFile, ()> {
@@ -154,6 +154,7 @@ async fn run_model_interface_cmd(model_path: &Path) -> Result<String, ModelParse
 
 fn get_model_interface_cmd(model_path: &Path) -> Command {
     let mut cmd = Command::new("minizinc");
+    cmd.kill_on_drop(true);
     cmd.arg(model_path);
     cmd.arg("--model-interface-only");
 

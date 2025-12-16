@@ -17,14 +17,26 @@ use crate::config::Config;
 use crate::sunny::sunny;
 use args::Args;
 use clap::Parser;
+use futures::channel::oneshot::Cancellation;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args = Args::parse();
     let config = Config::default();
+    let token = CancellationToken::new();
+    let token_signal = token.clone();
+
+    ctrlc::set_handler(move || {
+        token_signal.cancel();
+    })
+    .expect("Error setting Ctrl-C handler");
 
     match args.ai {
-        Ai::Simple => sunny(args, SimpleAi {}, config).await,
+        Ai::Simple => tokio::select! {
+            _ = sunny(args, SimpleAi {}, config, token.clone()) => {},
+            _ = token.cancelled() => {}
+        },
         Ai::BasicCommandLine => {
             let ai_config = parse_ai_config(args.ai_config.as_deref());
             let Some(command) = ai_config.get("command") else {
@@ -35,7 +47,10 @@ async fn main() {
             };
 
             let ai = crate::ai::commandline::Ai::new(command.clone(), args.debug_verbosity);
-            sunny(args, ai, config).await;
+            tokio::select! {
+                _ = sunny(args, ai, config, token.clone()) => {},
+                _ = token.cancelled() => {}
+            }
         }
     }
 }

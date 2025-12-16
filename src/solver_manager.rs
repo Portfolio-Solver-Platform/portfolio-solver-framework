@@ -16,6 +16,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 const SUSPEND_SIGNAL: &str = "SIGSTOP";
 const RESUME_SIGNAL: &str = "SIGCONT";
@@ -101,6 +102,19 @@ struct SolverProcess {
     best_objective: Option<ObjectiveValue>,
 }
 
+impl Drop for SolverProcess {
+    fn drop(&mut self) {
+        let pid = self.pid;
+
+        let resume_config = kill_tree::Config {
+            signal: String::from(crate::solver_manager::RESUME_SIGNAL),
+            ..Default::default()
+        };
+        let _ = kill_tree::blocking::kill_tree_with_config(pid, &resume_config);
+        let _ = kill_tree::blocking::kill_tree(pid);
+    }
+}
+
 pub struct SolverManager {
     tx: mpsc::UnboundedSender<Msg>,
     solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
@@ -108,6 +122,8 @@ pub struct SolverManager {
     mzn_to_fzn: mzn_to_fzn::CachedConverter,
     best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
     objective_type: ObjectiveType,
+    solver_args: HashMap<String, Vec<String>>,
+    token: CancellationToken,
 }
 
 struct PipeCommand {
@@ -117,18 +133,21 @@ struct PipeCommand {
 }
 
 impl SolverManager {
-    pub async fn new(args: Args) -> std::result::Result<Self, Error> {
+    pub async fn new(
+        args: Args,
+        solver_args: HashMap<String, Vec<String>>,
+        token: CancellationToken,
+    ) -> std::result::Result<Self, Error> {
         let objective_type = get_objective_type(&args.model).await?;
         let (tx, rx) = mpsc::unbounded_channel::<Msg>();
         let solvers = Arc::new(Mutex::new(HashMap::new()));
 
-        cleanup_handler(solvers.clone());
-        let solvers_clone = solvers.clone();
-        let best_objective = Arc::new(RwLock::new(None));
+        let best_objective: Arc<RwLock<Option<i64>>> = Arc::new(RwLock::new(None));
 
         let shared_objective = best_objective.clone();
+        let token_clone = token.clone();
         tokio::spawn(async move {
-            Self::receiver(rx, solvers_clone, objective_type, shared_objective).await
+            Self::receiver(rx, objective_type, shared_objective, token_clone).await
         });
 
         Ok(Self {
@@ -138,14 +157,16 @@ impl SolverManager {
             args,
             best_objective,
             objective_type,
+            solver_args,
+            token,
         })
     }
 
     async fn receiver(
         mut rx: mpsc::UnboundedReceiver<Msg>,
-        solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         objective_type: ObjectiveType,
         shared_objective: Arc<RwLock<Option<ObjectiveValue>>>,
+        token: CancellationToken,
     ) {
         let mut objective: Option<ObjectiveValue> = None;
 
@@ -164,16 +185,12 @@ impl SolverManager {
                 Msg::Status(status) => {
                     if status != Status::Unknown {
                         println!("{}", status.to_dzn_string());
+                        token.cancel();
                         break;
                     }
                 }
             }
         }
-
-        Self::_stop_all_solvers(solvers.clone())
-            .await
-            .expect("could not kill all solvers");
-        std::process::exit(0);
     }
 
     fn get_fzn_command(&self, fzn_path: &Path, solver_name: &str, cores: usize) -> Command {
@@ -181,16 +198,12 @@ impl SolverManager {
         cmd.arg("--solver").arg(solver_name);
         cmd.arg(fzn_path);
 
-        cmd.arg("-i");
-
-        // if self.args.output_objective { // TODO make this an option to the output we print since it is in the rules i think
-        //     cmd.arg("--output-objective");
-        // }
-
-        // if self.args.ignore_search {  // TODO maybe also this? This option however gives some errors for some solvers
-        //     cmd.arg("-f");
-        // }
-        cmd.arg("-f");
+        // Apply solver-specific arguments from config
+        if let Some(args) = self.solver_args.get(solver_name) {
+            for arg in args {
+                cmd.arg(arg);
+            }
+        }
 
         cmd.arg("-p").arg(cores.to_string());
 
@@ -219,14 +232,14 @@ impl SolverManager {
 
         let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
             if let Ok(new_temp_file) =
-                insert_objective(&conversion_paths.fzn, &self.objective_type, obj)
+                insert_objective(conversion_paths.fzn(), &self.objective_type, obj)
             {
                 (new_temp_file.path().to_path_buf(), Some(new_temp_file))
             } else {
-                (conversion_paths.fzn, None)
+                (conversion_paths.fzn().to_path_buf(), None)
             }
         } else {
-            (conversion_paths.fzn, None)
+            (conversion_paths.fzn().to_path_buf(), None)
         };
 
         let mut fzn_cmd = self.get_fzn_command(&fzn_final_path, solver_name, cores);
@@ -234,7 +247,7 @@ impl SolverManager {
         fzn_cmd.process_group(0); // let OS give it a group process id
         fzn_cmd.stderr(Stdio::piped());
 
-        let mut ozn_cmd = self.get_ozn_command(&conversion_paths.ozn);
+        let mut ozn_cmd = self.get_ozn_command(conversion_paths.ozn());
         ozn_cmd.stdout(Stdio::piped());
         ozn_cmd.stderr(Stdio::piped());
 
@@ -605,29 +618,6 @@ impl SolverManager {
     pub fn objective_type(&self) -> ObjectiveType {
         self.objective_type
     }
-}
-
-fn cleanup_handler(solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>) {
-    let solvers_clone = solvers.clone();
-
-    ctrlc::set_handler(move || {
-        let solvers_guard = solvers_clone.blocking_lock();
-
-        for state in solvers_guard.values() {
-            let pid = state.pid;
-            let _ = kill_tree::blocking::kill_tree(pid);
-
-            // Resume the stopped processes can receive kill signal
-            let resume_config = kill_tree::Config {
-                signal: String::from(RESUME_SIGNAL),
-                ..Default::default()
-            };
-            let _ = kill_tree::blocking::kill_tree_with_config(pid, &resume_config);
-        }
-
-        std::process::exit(0);
-    })
-    .expect("Error setting Ctrl-C handler");
 }
 
 async fn pipe(mut left: Command, mut right: Command) -> Result<PipeCommand> {
