@@ -74,7 +74,8 @@ fn is_over_threshold(used: f64, total: f64, threshold: f64) -> bool {
 
 impl Scheduler {
     pub async fn new(args: &Args, config: &Config) -> std::result::Result<Self, Error> {
-        let solver_manager = Arc::new(SolverManager::new(args.clone()).await?);
+        let solver_manager =
+            Arc::new(SolverManager::new(args.clone(), config.solver_args.clone()).await?);
 
         let memory_limit = std::env::var("MEMORY_LIMIT")
             .ok()
@@ -91,13 +92,13 @@ impl Scheduler {
             memory_limit,
             next_solver_id: 0,
             prev_objective: None,
-            config: *config,
+            config: config.clone(),
             debug_verbosity,
         }));
 
         let state_clone = state.clone();
         let solver_manager_clone = solver_manager.clone();
-        let config_clone = *config;
+        let config_clone = config.clone();
         tokio::spawn(async move {
             Self::memory_enforcer_loop(state_clone, solver_manager_clone, config_clone).await;
         });

@@ -60,7 +60,7 @@ impl ObjectiveType {
 }
 
 pub fn insert_objective(
-    fzn_path: &PathBuf,
+    fzn_path: &Path,
     objective_type: &ObjectiveType,
     objective: ObjectiveValue,
 ) -> Result<NamedTempFile, ()> {

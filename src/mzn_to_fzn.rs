@@ -1,7 +1,9 @@
 use crate::args::DebugVerbosityLevel;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
+use tempfile::NamedTempFile;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -9,6 +11,7 @@ use tokio::sync::RwLock;
 #[derive(Debug)]
 pub enum ConversionError {
     CommandFailed(std::process::ExitStatus),
+    TempFile(std::io::Error),
     Other(String),
 }
 
@@ -19,14 +22,23 @@ impl From<tokio::io::Error> for ConversionError {
 }
 
 pub struct CachedConverter {
-    cache: RwLock<HashMap<String, Conversion>>,
+    cache: RwLock<HashMap<String, Arc<Conversion>>>,
     debug_verbosity: DebugVerbosityLevel,
 }
 
-#[derive(Clone)]
 pub struct Conversion {
-    pub fzn: PathBuf,
-    pub ozn: PathBuf,
+    fzn_file: NamedTempFile,
+    ozn_file: NamedTempFile,
+}
+
+impl Conversion {
+    pub fn fzn(&self) -> &Path {
+        self.fzn_file.path()
+    }
+
+    pub fn ozn(&self) -> &Path {
+        self.ozn_file.path()
+    }
 }
 
 impl CachedConverter {
@@ -42,8 +54,7 @@ impl CachedConverter {
         model: &Path,
         data: Option<&Path>,
         solver_name: &str,
-    ) -> Result<Conversion, ConversionError> {
-        // TODO: Avoid cloning by making a use_files function that implicitly converts if necessary
+    ) -> Result<Arc<Conversion>, ConversionError> {
         {
             let cache = self.cache.read().await;
             if let Some(conversion) = cache.get(solver_name) {
@@ -51,22 +62,13 @@ impl CachedConverter {
             }
         }
 
-        let conversion = convert_mzn(model, data, solver_name, self.debug_verbosity).await?;
+        let conversion =
+            Arc::new(convert_mzn(model, data, solver_name, self.debug_verbosity).await?);
         let mut cache = self.cache.write().await;
         cache.insert(solver_name.to_owned(), conversion.clone());
 
         Ok(conversion)
     }
-
-    // pub async fn use_files(&self, solver_name: &str, f: impl FnOnce(&Conversion)) {
-    //     let conversion = self.cache.read().await.get(solver_name);
-    //     if let Some(conversion) = conversion {
-    //         f(conversion);
-    //     } else {
-    //         self.convert()
-    //     }
-    //     f(path.as_deref().map(|p| p));
-    // }
 }
 
 pub async fn convert_mzn(
@@ -75,31 +77,26 @@ pub async fn convert_mzn(
     solver_name: &str,
     verbosity: DebugVerbosityLevel,
 ) -> Result<Conversion, ConversionError> {
-    let fzn_file_path = get_new_model_file_name(model, solver_name);
-    let ozn_file_path = get_new_ozn_file_name(model, solver_name);
+    let fzn_file = tempfile::Builder::new()
+        .suffix(".fzn")
+        .tempfile()
+        .map_err(ConversionError::TempFile)?;
+    let ozn_file = tempfile::Builder::new()
+        .suffix(".ozn")
+        .tempfile()
+        .map_err(ConversionError::TempFile)?;
+
     run_mzn_to_fzn_cmd(
         model,
         data,
         solver_name,
-        &fzn_file_path,
-        &ozn_file_path,
+        fzn_file.path(),
+        ozn_file.path(),
         verbosity,
     )
     .await?;
-    Ok(Conversion {
-        fzn: fzn_file_path,
-        ozn: ozn_file_path,
-    })
-}
 
-fn get_new_model_file_name(model: &Path, solver_name: &str) -> PathBuf {
-    let new_file_name = format!("_portfolio-model-{solver_name}.fzn");
-    model.with_file_name(new_file_name)
-}
-
-fn get_new_ozn_file_name(model: &Path, solver_name: &str) -> PathBuf {
-    let new_file_name = format!("_portfolio-model-{solver_name}.ozn");
-    model.with_file_name(new_file_name)
+    Ok(Conversion { fzn_file, ozn_file })
 }
 
 async fn run_mzn_to_fzn_cmd(
