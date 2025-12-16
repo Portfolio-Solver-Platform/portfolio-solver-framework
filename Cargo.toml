@@ -15,4 +15,5 @@ regex = "1.12.2"
 sysinfo = "0.37.2"
 dashmap = "6.1.0"
 tempfile = "3.23.0"
+itertools = "0.14.0"
 tokio-util = { version = "0.7", features = ["rt"] }

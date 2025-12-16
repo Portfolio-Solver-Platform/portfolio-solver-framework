@@ -9,7 +9,10 @@ mod solver_manager;
 mod solver_output;
 mod sunny;
 
+use std::process::exit;
+
 use crate::ai::SimpleAi;
+use crate::args::{Ai, parse_ai_config};
 use crate::config::Config;
 use crate::sunny::sunny;
 use args::Args;
@@ -29,8 +32,25 @@ async fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    tokio::select! {
-        _ = sunny(args, SimpleAi {}, config, token.clone()) => {},
-        _ = token.cancelled() => {}
+    match args.ai {
+        Ai::Simple => tokio::select! {
+            _ = sunny(args, SimpleAi {}, config, token.clone()) => {},
+            _ = token.cancelled() => {}
+        },
+        Ai::BasicCommandLine => {
+            let ai_config = parse_ai_config(args.ai_config.as_deref());
+            let Some(command) = ai_config.get("command") else {
+                eprintln!(
+                    "'command' not provided in AI configuration when basic commandline AI has been specified"
+                );
+                exit(1);
+            };
+
+            let ai = crate::ai::commandline::Ai::new(command.clone(), args.debug_verbosity);
+            tokio::select! {
+                _ = sunny(args, ai, config, token.clone()) => {},
+                _ = token.cancelled() => {}
+            }
+        }
     }
 }

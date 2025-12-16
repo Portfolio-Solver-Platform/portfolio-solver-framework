@@ -1,5 +1,5 @@
 use crate::ai::Features;
-use std::path::PathBuf;
+use std::path::Path;
 use tokio::process::Command;
 
 #[derive(Debug)]
@@ -15,7 +15,7 @@ impl From<tokio::io::Error> for Error {
     }
 }
 
-pub async fn fzn_to_features(fzn_model: &PathBuf) -> Result<Features, Error> {
+pub async fn fzn_to_features(fzn_model: &Path) -> Result<Features, Error> {
     let output = run_fzn_to_feat_cmd(fzn_model).await?;
     output
         .replace("\n", "")
@@ -25,7 +25,7 @@ pub async fn fzn_to_features(fzn_model: &PathBuf) -> Result<Features, Error> {
         .map_err(|e| Error::FeatureParseFailed(output, e))
 }
 
-async fn run_fzn_to_feat_cmd(fzn_model: &PathBuf) -> Result<String, Error> {
+async fn run_fzn_to_feat_cmd(fzn_model: &Path) -> Result<String, Error> {
     let mut cmd = get_fzn_to_feat_cmd(fzn_model);
     let output = cmd.output().await?;
     if !output.status.success() {
@@ -35,7 +35,7 @@ async fn run_fzn_to_feat_cmd(fzn_model: &PathBuf) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn get_fzn_to_feat_cmd(fzn_model: &PathBuf) -> Command {
+fn get_fzn_to_feat_cmd(fzn_model: &Path) -> Command {
     let mut cmd = Command::new("mzn2feat");
     cmd.kill_on_drop(true);
     cmd.arg("-i");

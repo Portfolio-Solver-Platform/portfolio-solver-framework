@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+
+import argparse
+
+
+def parse_comma_separated_floats(input):
+    try:
+        return [float(x) for x in input.split(",")]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"'{input}' contains invalid values. Expected comma-separated floats."
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Example commandline AI")
+
+    parser.add_argument(
+        "features",
+        type=parse_comma_separated_floats,
+        help="the features (comma-separated, e.g. 1.0,2.5,3.3)",
+    )
+
+    parser.add_argument(
+        "-p",
+        required=True,
+        type=int,
+        metavar="CORES",
+        dest="cores",
+        help="how many cores the schedule should allocate for",
+    )
+
+    args = parser.parse_args()
+
+    sched = schedule(args.features, args.cores)
+    for solver, cores in sched:
+        print(f"{solver},{cores}")
+
+
+def schedule(features: list[float], cores: int) -> list[tuple[str, int]]:
+    return [("gecode", cores // 2), ("coinbc", cores // 2)]
+
+
+if __name__ == "__main__":
+    main()
