@@ -30,18 +30,22 @@ impl super::Ai for Ai {
         cmd.arg("-p").arg(cores.to_string());
         cmd.arg(features_to_arg(features));
 
-        let output = cmd
-            .output()
-            .map_err(|_| Error::Other("Failed to get command output".to_owned()))?;
+        let output = cmd.output().map_err(|e| {
+            Error::Other(format!(
+                "Failed to get command output for '{}': {e}",
+                self.command_name
+            ))
+        })?;
 
         if self.verbosity >= DebugVerbosityLevel::Error {
             print_stderr(output.stderr);
         }
 
         if !output.status.success() {
-            return Err(Error::Other(
-                "Command exited with non-zero status code".to_owned(),
-            ));
+            return Err(Error::Other(format!(
+                "Command exited with non-zero status code: {}",
+                output.status
+            )));
         }
 
         parse_output_as_schedule(output.stdout)
@@ -57,8 +61,8 @@ fn parse_output_as_schedule(output: Vec<u8>) -> Result<Portfolio> {
         .map_err(|_| Error::Other("Failed to convert command's stdout into a string".to_owned()))?;
 
     output
-        .split('\n')
-        .filter(|s| !s.is_empty())
+        .lines()
+        .filter(|line| !line.is_empty())
         .map(parse_output_line)
         .collect()
 }
@@ -66,7 +70,7 @@ fn parse_output_as_schedule(output: Vec<u8>) -> Result<Portfolio> {
 fn parse_output_line(line: &str) -> Result<SolverInfo> {
     let (solver, cores_str) = line.split_once(',').ok_or_else(|| {
         Error::Other(format!(
-            "Command output line does not contain a ',': {line}"
+            "Command output line does not contain a ',': '{line}'"
         ))
     })?;
     let cores = cores_str.parse::<usize>().map_err(|_| {
@@ -85,7 +89,7 @@ fn print_stderr(stderr: Vec<u8>) {
 
     match String::from_utf8(stderr) {
         Ok(stderr) => stderr
-            .split('\n')
+            .lines()
             .for_each(|line| eprintln!("AI error: {line}")),
         Err(_) => eprintln!("AI error: Failed to convert stderr to string"),
     }

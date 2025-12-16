@@ -10,9 +10,11 @@ pub struct Args {
     /// The MiniZinc data file corresponding to the model file
     pub data: Option<PathBuf>,
 
+    /// The AI used to determine the solver schedule dynamically
     #[arg(long, value_enum, default_value = "simple")]
     pub ai: Ai,
-    /// Configuration for the AI.
+    /// Configuration for the AI. This is only relevant when the AI documentation says
+    /// configuration should be added here.
     /// The format is: <key1>=<value1>,<key2>=<value2>,...
     #[arg(long)]
     pub ai_config: Option<String>,

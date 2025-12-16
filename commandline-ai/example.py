@@ -3,12 +3,12 @@
 import argparse
 
 
-def parse_comma_separated_floats(input):
+def parse_comma_separated_floats(input_str):
     try:
-        return [float(x) for x in input.split(",")]
+        return [float(x) for x in input_str.split(",")]
     except ValueError:
         raise argparse.ArgumentTypeError(
-            f"'{input}' contains invalid values. Expected comma-separated floats."
+            f"'{input_str}' contains invalid values. Expected comma-separated floats."
         )
 
 
