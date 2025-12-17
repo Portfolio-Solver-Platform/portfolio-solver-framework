@@ -1,7 +1,7 @@
 {
-  "name" : "K Means",
+  "name" : "sunny",
   "version": "1.0",
-  "id": "org.psp.k_means",
+  "id": "org.psp.sunny",
   "executable": "${EXECUTABLE_PATH}",
   "tags": ["portfolio"],
   "stdFlags": ["-p", "-f"],
