@@ -2,7 +2,7 @@
 
 ## Building
 
-Use `cargo build`, optionally with the `--release` flag.
+Use `cargo build --release`. This will place the executable in `./target/release/portfolio-solver-framework`.
 
 We also have a Dockerfile where you can find the installation instructions; however, it currently only includes a limited number of solvers, and Picat is not functioning properly in it.
 
@@ -12,9 +12,9 @@ We also have a Dockerfile where you can find the installation instructions; howe
 
 - You need to have `minizinc` installed
 
-### Arguments
+### Running It
 
-Use `--help` to see the arguments. 
+Use `<executable> --help` to see how to use the program, where `<executable>` is the path to the executable.
 
 Some additional information about select options:
 - `--ai`: When you use the `command-line` value, you also need to set `--ai-config command=<path_to_command>`. Also, there is an example Python AI in `command-line-ai/example.py`.
