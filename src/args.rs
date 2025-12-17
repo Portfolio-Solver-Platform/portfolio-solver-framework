@@ -51,8 +51,8 @@ pub struct Args {
 pub enum Ai {
     /// Use the simple AI
     Simple,
-    /// Use the basic command line AI. MUST specify ai-config with `command=<command-path>`.
-    BasicCommandLine,
+    /// Use the command line AI. MUST specify ai-config with `command=<command-path>`.
+    CommandLine,
 }
 
 #[derive(Debug, Clone, ValueEnum)]

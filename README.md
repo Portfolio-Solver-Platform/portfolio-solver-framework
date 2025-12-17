@@ -1,8 +1,28 @@
 # Portfolio Solver Framework
 
-## Setup
-To make your own portofolio solver available to MiniZinc do the following:
-Take the `solver.msc.template` and copy it to one of these paths:
+## Building
+
+Use `cargo build`, optionally with the `--release` flag.
+
+We also have a Dockerfile where you can find the installation instructions; however, it currently only includes a limited number of solvers, and Picat is not functioning properly in it.
+
+## Usage
+
+### Prerequisites
+
+- You need to have `minizinc` installed
+
+### Arguments
+
+Use `--help` to see the arguments. 
+
+Some additional information about select options:
+- `--ai`: When you use the `command-line` value, you also need to set `--ai-config command=<path_to_command>`. Also, there is an example Python AI in `command-line-ai/example.py`.
+- `--static-schedule-path`: This is used to set the static schedule by path. An example of a static schedule file is provided in `static-schedules/example.csv`.
+
+### As MiniZinc Solver
+
+To make it available as a solver to MiniZinc, take the `solver.msc.template` and copy it to one of these paths:
 - `/usr/share/minizinc/solvers` (on Linux only)
 - `$HOME/.minizinc/solvers`
 - For additional options, see the [MiniZinc documentation](https://docs.minizinc.dev/en/stable/fzn-spec.html#solver-configuration-files)

@@ -38,7 +38,7 @@ async fn main() {
             _ = sunny(args, SimpleAi {}, config, token.clone()) => {},
             _ = token.cancelled() => {}
         },
-        Ai::BasicCommandLine => {
+        Ai::CommandLine => {
             let ai_config = parse_ai_config(args.ai_config.as_deref());
             let Some(command) = ai_config.get("command") else {
                 eprintln!(
