@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::fzn_to_features::fzn_to_features;
 use crate::mzn_to_fzn::convert_mzn;
 use crate::scheduler::{Portfolio, Scheduler, SolverInfo};
+use crate::static_schedule::static_schedule;
 use crate::{ai::Ai, args::Args};
 use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
@@ -13,7 +14,10 @@ pub async fn sunny(args: Args, mut ai: impl Ai, config: Config, token: Cancellat
     let mut scheduler = Scheduler::new(&args, &config, token)
         .await
         .expect("Failed to create scheduler");
-    scheduler.apply(static_schedule(cores)).await.unwrap(); // TODO: Maybe do this in another thread
+    scheduler
+        .apply(static_schedule(&args, cores).await.unwrap())
+        .await
+        .unwrap(); // TODO: Maybe do this in another thread
 
     let mut timer = sleep(timer_duration);
     let conversion = convert_mzn(
@@ -38,20 +42,4 @@ pub async fn sunny(args: Args, mut ai: impl Ai, config: Config, token: Cancellat
 
         timer = sleep(timer_duration);
     }
-}
-
-fn static_schedule(cores: usize) -> Portfolio {
-    vec![
-        SolverInfo::new("coinbc".to_string(), 1),
-        SolverInfo::new("gecode".to_string(), 1),
-        SolverInfo::new("picat".to_string(), 1),
-        SolverInfo::new("cp-sat".to_string(), 1),
-        SolverInfo::new("chuffed".to_string(), 1),
-        SolverInfo::new("yuck".to_string(), 1),
-        // SolverInfo::new( "xpress".to_string(), cores / 10),
-        // SolverInfo::new( "scip".to_string(), cores / 10),
-        // SolverInfo::new( "highs".to_string(), cores / 10),
-        // SolverInfo::new( "gurobi".to_string(), cores / 10),
-        // SolverInfo::new("coinbc".to_string(), cores / 2),
-    ]
 }
