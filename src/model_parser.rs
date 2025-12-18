@@ -9,15 +9,15 @@ pub type ObjectiveValue = i64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelParseError {
-    #[error("Failed to parse method: {0}")]
+    #[error("failed to parse method: {0}")]
     MethodParseError(String),
     #[error("IO failed")]
     IoError(#[from] std::io::Error),
-    #[error("Regex failed")]
+    #[error("regex failed")]
     RegexError(#[from] regex::Error),
-    #[error("Command failed: {0}")]
+    #[error("command failed: {0}")]
     CommandFailed(ExitStatus),
-    #[error("Error occurred when parsing the command output")]
+    #[error("error occurred when parsing the command output")]
     CommandOutputError(#[from] CommandOutputError),
 }
 

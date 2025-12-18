@@ -7,7 +7,7 @@ pub enum Error {
     #[error("command failed: {0}")]
     CommandFailed(std::process::ExitStatus),
     #[error("feature parsing failed on '{0}': {1}")]
-    FeatureParseFailed(String, std::num::ParseFloatError),
+    FeatureParseFailed(String, #[source] std::num::ParseFloatError),
     #[error("IO error")]
     Io(#[from] tokio::io::Error),
 }
