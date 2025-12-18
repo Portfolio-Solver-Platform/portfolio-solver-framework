@@ -74,7 +74,7 @@ pub enum Error {
     TempFile(#[from] async_tempfile::Error),
     #[error(transparent)]
     Io(#[from] tokio::io::Error),
-    #[error("tried to convert create the objective constraint on a satisfaction problem")]
+    #[error("tried to create the objective constraint on a satisfaction problem")]
     GetObjectiveOnSatisfyType,
 }
 
