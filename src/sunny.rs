@@ -14,6 +14,7 @@ pub async fn sunny(args: Args, mut ai: impl Ai, config: Config, token: Cancellat
     let cores = args.cores.unwrap_or(2);
     let mut scheduler = Scheduler::new(&args, &config, token)
         .await
+        .map_err(|e| logging::error!(e.into()))
         .expect("Failed to create scheduler");
 
     let schedule = static_schedule(&args, cores)
