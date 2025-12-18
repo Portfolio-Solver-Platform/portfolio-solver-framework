@@ -61,7 +61,6 @@ pub struct SolverManager {
     best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
     objective_type: ObjectiveType,
     solver_args: HashMap<String, Vec<String>>,
-    token: CancellationToken,
 }
 
 struct PipeCommand {
@@ -99,7 +98,6 @@ impl SolverManager {
             best_objective,
             objective_type,
             solver_args,
-            token,
         })
     }
 
