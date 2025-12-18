@@ -1,7 +1,6 @@
 use crate::args::{Args, DebugVerbosityLevel};
-use crate::model_parser::{
-    ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type, insert_objective,
-};
+use crate::insert_objective::insert_objective;
+use crate::model_parser::{ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type};
 use crate::scheduler::ScheduleElement;
 use crate::solver_output::{Output, Solution, Status};
 use crate::{mzn_to_fzn, solver_output};
