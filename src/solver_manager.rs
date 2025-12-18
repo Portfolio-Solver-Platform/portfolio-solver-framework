@@ -8,7 +8,6 @@ use futures::future::join_all;
 use nix::sys::signal::{self, Signal};
 use nix::unistd;
 use std::collections::{HashMap, HashSet};
-use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -18,14 +17,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-const SUSPEND_SIGNAL: &str = "SIGSTOP";
-const RESUME_SIGNAL: &str = "SIGCONT";
-const KILL_SIGNAL: &str = "SIGTERM";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("failed to kill process tree")]
-    KillTree(#[from] kill_tree::Error),
     #[error("invalid solver: {0}")]
     InvalidSolver(String),
     #[error("IO error")]
@@ -399,7 +393,7 @@ impl SolverManager {
     async fn send_signal_to_solver(
         solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         id: usize,
-        signal: String,
+        signal: Signal,
     ) -> std::result::Result<(), Error> {
         let pid = {
             let map = solvers.lock().await;
@@ -409,20 +403,9 @@ impl SolverManager {
             }
         };
 
-        let config = kill_tree::Config {
-            signal,
-            ..Default::default()
-        };
-        if let Err(e) = kill_tree::tokio::kill_tree_with_config(pid, &config).await {
-            let is_zombie = match &e {
-                kill_tree::Error::Io(io_err) => io_err.kind() == ErrorKind::NotFound,
-                kill_tree::Error::InvalidProcessId { .. } => true,
-                _ => false,
-            };
-            if !is_zombie {
-                return Err(Error::KillTree(e));
-            }
-        }
+        // Convert to negative PID to signal the entire process group
+        let pid = unistd::Pid::from_raw(-(pid as i32));
+        let _ = signal::kill(pid, signal);
 
         Ok(())
     }
@@ -430,11 +413,11 @@ impl SolverManager {
     async fn send_signal_to_solvers(
         solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         ids: &[usize],
-        signal: &str,
+        signal: Signal,
     ) -> std::result::Result<(), Vec<Error>> {
         let futures = ids
             .iter()
-            .map(|id| Self::send_signal_to_solver(solvers.clone(), *id, signal.to_string()));
+            .map(|id| Self::send_signal_to_solver(solvers.clone(), *id, signal));
         let results = join_all(futures).await;
         let errors: Vec<Error> = results.into_iter().filter_map(|res| res.err()).collect();
 
@@ -447,52 +430,50 @@ impl SolverManager {
 
     async fn send_signal_to_all_solvers(
         solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
-        signal: &str,
+        signal: Signal,
     ) -> std::result::Result<(), Vec<Error>> {
         let ids: Vec<usize> = { solvers.lock().await.keys().cloned().collect() };
         Self::send_signal_to_solvers(solvers.clone(), &ids, signal).await
     }
 
     pub async fn suspend_solver(&self, id: usize) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(self.solvers.clone(), id, String::from(SUSPEND_SIGNAL)).await
+        Self::send_signal_to_solver(self.solvers.clone(), id, Signal::SIGSTOP).await
     }
 
     pub async fn suspend_solvers(&self, ids: &[usize]) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(self.solvers.clone(), ids, SUSPEND_SIGNAL).await
+        Self::send_signal_to_solvers(self.solvers.clone(), ids, Signal::SIGSTOP).await
     }
 
     pub async fn suspend_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_all_solvers(self.solvers.clone(), SUSPEND_SIGNAL).await
+        Self::send_signal_to_all_solvers(self.solvers.clone(), Signal::SIGSTOP).await
     }
 
     pub async fn resume_solver(&self, id: usize) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(self.solvers.clone(), id, String::from(RESUME_SIGNAL)).await
+        Self::send_signal_to_solver(self.solvers.clone(), id, Signal::SIGCONT).await
     }
 
     pub async fn resume_solvers(&self, ids: &[usize]) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(self.solvers.clone(), ids, RESUME_SIGNAL).await
+        Self::send_signal_to_solvers(self.solvers.clone(), ids, Signal::SIGCONT).await
     }
 
     pub async fn resume_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_all_solvers(self.solvers.clone(), RESUME_SIGNAL).await
+        Self::send_signal_to_all_solvers(self.solvers.clone(), Signal::SIGCONT).await
     }
 
     async fn _stop_solver(
         solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         id: usize,
     ) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(solvers.clone(), id, String::from(KILL_SIGNAL)).await?;
-        let _ = Self::send_signal_to_solver(solvers.clone(), id, String::from(RESUME_SIGNAL)).await; // we ignore since the process might already be dead
-        Ok(())
+        Self::send_signal_to_solver(solvers.clone(), id, Signal::SIGCONT).await?; // Resume first in case it's suspended
+        Self::send_signal_to_solver(solvers.clone(), id, Signal::SIGTERM).await
     }
 
     async fn _stop_solvers(
         solvers: Arc<Mutex<HashMap<usize, SolverProcess>>>,
         ids: &[usize],
     ) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(solvers.clone(), ids, KILL_SIGNAL).await?;
-        let _ = Self::send_signal_to_solvers(solvers.clone(), ids, RESUME_SIGNAL).await; // we ignore since the process might already be dead
-        Ok(())
+        Self::send_signal_to_solvers(solvers.clone(), ids, Signal::SIGCONT).await?; // Resume first in case suspended
+        Self::send_signal_to_solvers(solvers.clone(), ids, Signal::SIGTERM).await
     }
 
     async fn _stop_all_solvers(
