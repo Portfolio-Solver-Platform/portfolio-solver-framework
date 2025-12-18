@@ -8,10 +8,13 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConversionError {
+    #[error("command failed: {0}")]
     CommandFailed(std::process::ExitStatus),
+    #[error("IO error during temporary file use")]
     TempFile(std::io::Error),
+    #[error("{0}")]
     Other(String),
 }
 
