@@ -543,7 +543,7 @@ impl SolverManager {
         let mut solver_mem = solvers
             .into_iter()
             .map(|(pid, id)| (Self::get_process_tree_memory(&system, pid), id))
-            .collect::<Vec<(u64, usize)>>();
+            .collect::<Vec<(u64, u64)>>();
         solver_mem.sort_by_key(|(mem, _)| std::cmp::Reverse(*mem));
         solver_mem
     }
@@ -552,7 +552,7 @@ impl SolverManager {
         *self.best_objective.read().await
     }
 
-    pub async fn get_solver_objectives(&self) -> HashMap<usize, Option<ObjectiveValue>> {
+    pub async fn get_solver_objectives(&self) -> HashMap<u64, Option<ObjectiveValue>> {
         self.solvers
             .lock()
             .await
