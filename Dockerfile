@@ -3,22 +3,15 @@ FROM rust AS builder
 
 WORKDIR /usr/src/app
 
-# Copy dependency manifests first (changes rarely)
+# Build dependencies only (so they are cached)
 COPY Cargo.toml Cargo.lock ./
-
-# Create dummy main.rs to build dependencies
+# Dummy main file
 RUN mkdir src && echo "fn main() {}" > src/main.rs
-
-# Build dependencies (this layer is cached unless Cargo.toml changes)
 RUN cargo build --release
-
-# Remove dummy artifacts
 RUN rm -rf src
 
-# Now copy actual source code (changes frequently)
+# Now copy and build the actual source code
 COPY src ./src
-
-# Build only your code (dependencies are cached!)
 RUN touch src/main.rs && cargo build --release
 
 
@@ -45,17 +38,16 @@ RUN apt-get update && apt-get install -y \
     libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Huub
+
 FROM rust AS huub
 
-# Install Huub
 RUN git clone --branch pub/CP2025 https://github.com/huub-solver/huub.git /huub
 WORKDIR /huub
 RUN cargo build --release
 
+
 FROM base AS yuck
 
-# Install Yuck solver (requires Java)
 RUN wget https://github.com/informarte/yuck/releases/download/20251106/yuck-20251106.zip \
     && unzip yuck-20251106.zip -d /opt \
     && mv /opt/yuck-20251106 /opt/yuck \
@@ -102,6 +94,7 @@ RUN git clone https://github.com/nfzhou/fzn_picat.git /opt/fzn_picat
 # Install solver configurations
 COPY --from=solver-configs /solvers/*.msc /usr/local/share/minizinc/solvers/
 
+# Copy solver files
 COPY ./solvers/picat/wrapper.sh /usr/local/bin/fzn-picat
 
 COPY --from=huub /huub/target/release/fzn-huub /usr/local/bin/fzn-huub
