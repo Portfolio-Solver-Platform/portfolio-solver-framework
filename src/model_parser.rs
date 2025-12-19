@@ -101,6 +101,7 @@ fn get_model_interface_cmd(minizinc_command: &Path, model_path: &Path) -> Comman
     cmd.kill_on_drop(true);
     cmd.arg(model_path);
     cmd.arg("--model-interface-only");
+    cmd.args(["--solver", "coinbc"]);
 
     cmd
 }
