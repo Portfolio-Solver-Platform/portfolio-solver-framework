@@ -5,9 +5,14 @@ use crate::scheduler::ScheduleElement;
 use crate::solver_output::{Output, Solution, Status};
 use crate::{mzn_to_fzn, solver_output};
 use futures::future::join_all;
+
+#[cfg(target_os = "linux")]
+use nix::sched::{CpuSet, sched_setaffinity};
+
 use nix::sys::signal::{self, Signal};
 use nix::unistd;
 use std::collections::{HashMap, HashSet};
+use std::os::unix;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -204,6 +209,19 @@ impl SolverManager {
         } = pipe(fzn_cmd, ozn_cmd).await?;
 
         let pid = fzn.id().expect("Child has no PID");
+        #[cfg(target_os = "linux")]
+        {
+            let mut cpu_set = CpuSet::new();
+
+            cpu_set.set(0).unwrap();
+
+            if let Err(e) = sched_setaffinity(pid, &cpu_set) {
+                eprintln!(
+                    "Warning: Failed to set affinity (process might have exited): {}",
+                    e
+                );
+            }
+        }
 
         {
             let mut map = self.solvers.lock().await;
