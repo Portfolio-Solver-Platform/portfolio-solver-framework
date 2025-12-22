@@ -5,6 +5,7 @@ mod fzn_to_features;
 mod insert_objective;
 mod logging;
 mod model_parser;
+mod msc_discovery;
 mod mzn_to_fzn;
 mod scheduler;
 mod solver_manager;
@@ -26,6 +27,19 @@ use tokio_util::sync::CancellationToken;
 async fn main() {
     let args = Args::parse();
     logging::init(args.debug_verbosity);
+    
+    // Discover all .msc files and parse solver metadata when the program loads
+    let solver_metadata = match msc_discovery::discover_solver_metadata(&args.minizinc_exe).await {
+        Ok(metadata) => {
+            logging::info!("Discovered solver metadata for {} solver(s)", metadata.len());
+            metadata
+        }
+        Err(e) => {
+            logging::warning!("Failed to discover solver metadata: {}", e);
+            msc_discovery::SolverMetadataMap::new()
+        }
+    };
+    
     let config = Config::default();
     let token = CancellationToken::new();
     let token_signal = token.clone();
@@ -37,7 +51,7 @@ async fn main() {
 
     match args.ai {
         Ai::Simple => tokio::select! {
-            _ = sunny(args, SimpleAi {}, config, token.clone()) => {},
+            _ = sunny(args, SimpleAi {}, config, solver_metadata, token.clone()) => {},
             _ = token.cancelled() => {}
         },
         Ai::CommandLine => {
@@ -51,7 +65,7 @@ async fn main() {
 
             let ai = crate::ai::commandline::Ai::new(command.clone(), args.debug_verbosity);
             tokio::select! {
-                _ = sunny(args, ai, config, token.clone()) => {},
+                _ = sunny(args, ai, config, solver_metadata, token.clone()) => {},
                 _ = token.cancelled() => {}
             }
         }

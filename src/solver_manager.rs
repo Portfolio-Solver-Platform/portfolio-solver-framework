@@ -1,6 +1,8 @@
 use crate::args::{Args, DebugVerbosityLevel};
 use crate::insert_objective::insert_objective;
 use crate::model_parser::{ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type};
+use crate::msc_discovery::SolverMetadata;
+use crate::msc_discovery::SolverMetadataMap;
 use crate::scheduler::ScheduleElement;
 use crate::solver_output::{Output, Solution, Status};
 use crate::{logging, mzn_to_fzn, solver_output};
@@ -61,6 +63,7 @@ pub struct SolverManager {
     best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
     objective_type: ObjectiveType,
     solver_args: HashMap<String, Vec<String>>,
+    solver_metadata: SolverMetadataMap,
 }
 
 struct PipeCommand {
@@ -73,6 +76,7 @@ impl SolverManager {
     pub async fn new(
         args: Args,
         solver_args: HashMap<String, Vec<String>>,
+        solver_metadata: SolverMetadataMap,
         token: CancellationToken,
     ) -> std::result::Result<Self, Error> {
         let objective_type = get_objective_type(&args.minizinc_exe, &args.model).await?;
@@ -98,6 +102,7 @@ impl SolverManager {
             best_objective,
             objective_type,
             solver_args,
+            solver_metadata,
         })
     }
 
@@ -139,9 +144,24 @@ impl SolverManager {
         }
     }
 
-    fn get_fzn_command(&self, fzn_path: &Path, solver_name: &str, cores: usize) -> Command {
-        let mut cmd = Command::new(&self.args.minizinc_exe);
-        cmd.arg("--solver").arg(solver_name);
+    fn get_fzn_command(
+        &self,
+        fzn_path: &Path,
+        solver_name: &str,
+        cores: usize,
+        metadata: &SolverMetadata,
+    ) -> Result<Command> {
+        let mut cmd = if metadata.input_type == "FZN" {
+            Command::new(&self.args.minizinc_exe)
+        } else {
+            if metadata.executable.is_none() {
+                return Err(Error::InvalidSolver(solver_name.to_string()));
+            }
+            Command::new(metadata.executable.clone().unwrap())
+        };
+        if metadata.input_type == "FZN" {
+            cmd.arg("--solver").arg(solver_name);
+        }
         cmd.arg(fzn_path);
 
         // Apply solver-specific arguments from config
@@ -150,10 +170,11 @@ impl SolverManager {
                 cmd.arg(arg);
             }
         }
-
-        cmd.arg("-p").arg(cores.to_string());
-
-        cmd
+        if metadata.input_type == "FZN" {
+            cmd.arg("-p").arg(cores.to_string());
+        }
+        logging::info!("Starting solver: {}, with command: {:?}", solver_name, cmd);
+        Ok(cmd)
     }
 
     fn get_ozn_command(&self, ozn_path: &Path) -> Command {
@@ -170,17 +191,39 @@ impl SolverManager {
     ) -> Result<()> {
         let solver_name = &elem.info.name;
         let cores = elem.info.cores;
+        let metadata = self
+            .solver_metadata
+            .get(solver_name)
+            .cloned()
+            .unwrap_or_else(|| SolverMetadata {
+                input_type: "FZN".to_string(),
+                executable: None,
+            });
+        logging::info!(
+            "Starting solver: {}, inputType({}), executable({:?})",
+            solver_name,
+            metadata.input_type,
+            metadata.executable
+        );
 
         let conversion_paths = self
             .mzn_to_fzn
-            .convert(&self.args.model, self.args.data.as_deref(), solver_name)
+            .convert(
+                &self.args.model,
+                self.args.data.as_deref(),
+                solver_name,
+                &metadata.input_type,
+            )
             .await?;
-
         let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
-            if let Ok(new_temp_file) =
-                insert_objective(conversion_paths.fzn(), &self.objective_type, obj).await
-            {
-                (new_temp_file.file_path().to_path_buf(), Some(new_temp_file))
+            // Inside this branch, compute the tuple
+            if metadata.input_type.as_str() == "FZN" {
+                match insert_objective(conversion_paths.fzn(), &self.objective_type, obj).await {
+                    Ok(new_temp_file) => {
+                        (new_temp_file.file_path().to_path_buf(), Some(new_temp_file))
+                    }
+                    Err(_) => (conversion_paths.fzn().to_path_buf(), None),
+                }
             } else {
                 (conversion_paths.fzn().to_path_buf(), None)
             }
@@ -188,7 +231,9 @@ impl SolverManager {
             (conversion_paths.fzn().to_path_buf(), None)
         };
 
-        let mut fzn_cmd = self.get_fzn_command(&fzn_final_path, solver_name, cores);
+        let mut fzn_cmd = self
+            .get_fzn_command(&fzn_final_path, solver_name, cores, &metadata)
+            .unwrap();
         #[cfg(unix)]
         fzn_cmd.process_group(0); // let OS give it a group process id
         fzn_cmd.stderr(Stdio::piped());

@@ -17,6 +17,8 @@ pub enum ConversionError {
     TempFile(std::io::Error),
     #[error("IO error")]
     Io(#[from] tokio::io::Error),
+    #[error("Unknown flat_type {0}")]
+    UnknownFlatType(String),
 }
 
 pub struct CachedConverter {
@@ -54,6 +56,7 @@ impl CachedConverter {
         model: &Path,
         data: Option<&Path>,
         solver_name: &str,
+        flat_type: &String,
     ) -> Result<Arc<Conversion>, ConversionError> {
         {
             let cache = self.cache.read().await;
@@ -68,6 +71,7 @@ impl CachedConverter {
                 model,
                 data,
                 solver_name,
+                flat_type,
                 self.debug_verbosity,
             )
             .await?,
@@ -84,12 +88,24 @@ pub async fn convert_mzn(
     model: &Path,
     data: Option<&Path>,
     solver_name: &str,
+    flat_type: &String,
     verbosity: DebugVerbosityLevel,
 ) -> Result<Conversion, ConversionError> {
-    let fzn_file = tempfile::Builder::new()
-        .suffix(".fzn")
-        .tempfile()
-        .map_err(ConversionError::TempFile)?;
+    let fzn_file = if flat_type == "FZN" {
+        logging::info!("converting {} for solver {} to FZN", model.display(), solver_name);
+        tempfile::Builder::new()
+            .suffix(".fzn")
+            .tempfile()
+            .map_err(ConversionError::TempFile)?
+    } else if  flat_type == "JSON" {
+        logging::info!("converting {} for solver {} to JSON", model.display(), solver_name);
+        tempfile::Builder::new()
+            .suffix(".fzn.json")
+            .tempfile()
+            .map_err(ConversionError::TempFile)?
+    } else {
+        return Err(ConversionError::UnknownFlatType(flat_type.to_string()));
+    };
     let ozn_file = tempfile::Builder::new()
         .suffix(".ozn")
         .tempfile()
