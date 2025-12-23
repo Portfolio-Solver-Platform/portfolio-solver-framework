@@ -1,18 +1,19 @@
 use crate::config::Config;
 use crate::fzn_to_features::fzn_to_features;
 use crate::mzn_to_fzn::convert_mzn;
+use crate::msc_discovery::SolverMetadataMap;
 use crate::scheduler::Scheduler;
 use crate::static_schedule::static_schedule;
 use crate::{ai::Ai, args::Args};
 use crate::{logging, solver_manager};
 use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
-const FEATURES_SOLVER: &str = "coinbc";
+const FEATURES_SOLVER: &str = "gecode";
 
-pub async fn sunny(args: Args, mut ai: impl Ai, config: Config, token: CancellationToken) {
+pub async fn sunny(args: Args, mut ai: impl Ai, config: Config, solver_metadata: SolverMetadataMap, token: CancellationToken) {
     let timer_duration = Duration::from_secs(config.dynamic_schedule_interval);
     let cores = args.cores.unwrap_or(2);
-    let mut scheduler = Scheduler::new(&args, &config, token)
+    let mut scheduler = Scheduler::new(&args, &config, solver_metadata, token)
         .await
         .map_err(|e| logging::error!(e.into()))
         .expect("Failed to create scheduler");
@@ -32,6 +33,7 @@ pub async fn sunny(args: Args, mut ai: impl Ai, config: Config, token: Cancellat
         &args.model,
         args.data.as_deref(),
         FEATURES_SOLVER,
+        &"FZN".to_string(),
         args.debug_verbosity,
     )
     .await
