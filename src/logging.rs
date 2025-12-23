@@ -17,7 +17,7 @@ pub(crate) fn log_msg_impl(
     let current_level = CURRENT_VERBOSITY.load(Ordering::Relaxed);
 
     if current_level >= verbosity {
-        eprintln!("{level}: [{file}:{line}] {args}");
+        eprintln!("%{level}: [{file}:{line}] {args}");
     }
 }
 
