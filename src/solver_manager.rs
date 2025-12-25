@@ -738,6 +738,13 @@ impl SolverManager {
 
 async fn pipe(mut left: Command, mut right: Command) -> Result<PipeCommand> {
     let mut left_child = left.stdout(Stdio::piped()).spawn()?;
+
+    #[cfg(unix)]
+    {
+        let left_pid = left_child.id().expect("left child has no PID");
+        right.process_group(left_pid as i32);
+    }
+
     let mut right_child = right.stdin(Stdio::piped()).spawn()?;
 
     let mut left_stdout = left_child.stdout.take().expect("left stdout not captured");
