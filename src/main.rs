@@ -6,6 +6,7 @@ mod insert_objective;
 mod logging;
 mod model_parser;
 mod mzn_to_fzn;
+mod process_tree;
 mod scheduler;
 mod solver_manager;
 mod solver_output;

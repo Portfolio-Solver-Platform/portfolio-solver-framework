@@ -1,6 +1,7 @@
 use crate::args::{Args, DebugVerbosityLevel};
 use crate::insert_objective::insert_objective;
 use crate::model_parser::{ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type};
+use crate::process_tree::{collect_descendants, get_process_tree_memory, send_signal_to_tree};
 use crate::scheduler::ScheduleElement;
 use crate::solver_output::{Output, Solution, Status};
 use crate::{mzn_to_fzn, solver_output};
@@ -9,19 +10,20 @@ use futures::future::join_all;
 use nix::errno::Errno;
 #[cfg(target_os = "linux")]
 use nix::sched::{CpuSet, sched_setaffinity};
-
 use nix::sys::signal::{self, Signal};
+
 use nix::unistd;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::os::unix;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use sysinfo::{Pid, System};
+use std::time::Duration;
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinHandle;
+use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
@@ -57,14 +59,36 @@ struct SolverProcess {
 impl Drop for SolverProcess {
     fn drop(&mut self) {
         let pid = self.pid;
-        let resume_config = kill_tree::Config {
-            signal: String::from("SIGCONT"),
-            ..Default::default()
-        };
-        let _ = kill_tree::blocking::kill_tree_with_config(pid, &resume_config);
-        let pid = unistd::Pid::from_raw(-(pid as i32));
+        let mut all_descendants: HashSet<Pid> = HashSet::new();
 
-        let _ = signal::kill(pid, Signal::SIGTERM);
+        let system = System::new_with_specifics(
+            RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+        );
+        let mut descendants = Vec::new();
+        collect_descendants(&system, Pid::from_u32(pid), &mut descendants);
+        all_descendants.extend(descendants);
+
+        send_signal_to_tree(pid, Signal::SIGCONT);
+
+        let gpid = unistd::Pid::from_raw(-(pid as i32));
+        let _ = signal::kill(gpid, Signal::SIGTERM);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let system = System::new_with_specifics(
+            RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+        );
+        let mut descendants = Vec::new();
+        collect_descendants(&system, Pid::from_u32(pid), &mut descendants);
+        all_descendants.extend(descendants);
+
+        for child_pid in &all_descendants {
+            let _ = signal::kill(
+                unistd::Pid::from_raw(child_pid.as_u32() as i32),
+                Signal::SIGKILL,
+            );
+        }
+        let _ = signal::kill(unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
     }
 }
 
@@ -512,17 +536,7 @@ impl SolverManager {
             }
         };
 
-        // kill tree sometimes (but rarely) when killing the process group so we use signal::kill instead. However signal::kill cant send signals to all children in the group so we still use kill_tree to achieve this
-        if signal != Signal::SIGTERM {
-            let resume_config = kill_tree::Config {
-                signal: String::from(signal.as_str()),
-                ..Default::default()
-            };
-            let _ = kill_tree::tokio::kill_tree_with_config(pid, &resume_config).await;
-        } else {
-            let pid = unistd::Pid::from_raw(-(pid as i32));
-            let _ = signal::kill(pid, signal);
-        }
+        send_signal_to_tree(pid, signal);
 
         Ok(())
     }
@@ -581,16 +595,24 @@ impl SolverManager {
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         id: u64,
     ) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(solvers.clone(), id, Signal::SIGCONT).await?; // Resume first in case it's suspended
-        Self::send_signal_to_solver(solvers.clone(), id, Signal::SIGTERM).await
+        Self::kill_solver(solvers, id).await
     }
 
     async fn _stop_solvers(
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         ids: &[u64],
     ) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(solvers.clone(), ids, Signal::SIGCONT).await?; // Resume first in case suspended
-        Self::send_signal_to_solvers(solvers.clone(), ids, Signal::SIGTERM).await
+        let futures = ids
+            .iter()
+            .map(|id| Self::kill_solver(solvers.clone(), *id));
+        let results = join_all(futures).await;
+        let errors: Vec<Error> = results.into_iter().filter_map(|res| res.err()).collect();
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     async fn _stop_all_solvers(
@@ -614,25 +636,6 @@ impl SolverManager {
 
     pub async fn stop_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
         Self::_stop_all_solvers(self.solvers.clone()).await
-    }
-
-    fn get_process_tree_memory(system: &System, root_pid: u32) -> u64 {
-        let root_pid = Pid::from_u32(root_pid);
-        let mut total_memory = 0u64;
-        let mut pids_to_check = vec![root_pid];
-
-        while let Some(pid) = pids_to_check.pop() {
-            if let Some(process) = system.process(pid) {
-                total_memory += process.memory();
-                for (child_pid, child_process) in system.processes() {
-                    if child_process.parent() == Some(pid) {
-                        pids_to_check.push(*child_pid);
-                    }
-                }
-            }
-        }
-
-        total_memory
     }
 
     pub async fn active_solver_ids(&self) -> HashSet<u64> {
@@ -661,7 +664,7 @@ impl SolverManager {
 
         let mut solver_mem = solvers
             .into_iter()
-            .map(|(pid, id)| (Self::get_process_tree_memory(&system, pid), id))
+            .map(|(pid, id)| (get_process_tree_memory(system, pid), id))
             .collect::<Vec<(u64, u64)>>();
         solver_mem.sort_by_key(|(mem, _)| std::cmp::Reverse(*mem));
         solver_mem
@@ -682,6 +685,54 @@ impl SolverManager {
 
     pub fn objective_type(&self) -> ObjectiveType {
         self.objective_type
+    }
+
+    async fn kill_solver(
+        solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
+        id: u64,
+    ) -> std::result::Result<(), Error> {
+        let pid = {
+            let map = solvers.lock().await;
+            match map.get(&id) {
+                Some(state) => state.pid,
+                None => return Err(Error::InvalidSolver(format!("Solver {id} not running"))),
+            }
+        };
+
+        let mut all_descendants: HashSet<Pid> = HashSet::new();
+
+        let system = System::new_with_specifics(
+            RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+        );
+        let mut descendants = Vec::new();
+        collect_descendants(&system, Pid::from_u32(pid), &mut descendants);
+        all_descendants.extend(descendants);
+
+        send_signal_to_tree(pid, Signal::SIGCONT);
+
+        let gpid = unistd::Pid::from_raw(-(pid as i32));
+        let _ = signal::kill(gpid, Signal::SIGTERM);
+
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(100)).await;
+
+            let system = System::new_with_specifics(
+                RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+            );
+            let mut descendants = Vec::new();
+            collect_descendants(&system, Pid::from_u32(pid), &mut descendants);
+            all_descendants.extend(descendants);
+
+            for child_pid in &all_descendants {
+                let _ = signal::kill(
+                    unistd::Pid::from_raw(child_pid.as_u32() as i32),
+                    Signal::SIGKILL,
+                );
+            }
+            let _ = signal::kill(unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
+        });
+
+        Ok(())
     }
 }
 
