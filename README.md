@@ -15,6 +15,7 @@ docker build -t framework:latest . \
 
 ### Prerequisites
 
+- You are on a Unix system
 - You need to have `minizinc` installed
 
 ### Running It

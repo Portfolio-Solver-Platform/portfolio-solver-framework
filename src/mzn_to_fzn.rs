@@ -159,6 +159,8 @@ fn get_mzn_to_fzn_cmd(
 ) -> Command {
     let mut cmd = Command::new(minizinc_command);
     cmd.kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd.arg("-c");
     cmd.arg(model);
     if let Some(data) = data {
