@@ -1,13 +1,10 @@
-use std::sync::PoisonError;
-
 use crate::config::Config;
 use crate::fzn_to_features::fzn_to_features;
 use crate::mzn_to_fzn::convert_mzn;
-use crate::scheduler::{Portfolio, Scheduler, SolverInfo};
+use crate::scheduler::Scheduler;
 use crate::static_schedule::static_schedule;
 use crate::{ai::Ai, args::Args};
 use crate::{logging, solver_manager};
-use nix::sched;
 use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 const FEATURES_SOLVER: &str = "gecode";
@@ -40,22 +37,17 @@ pub async fn sunny(args: Args, mut ai: impl Ai, config: Config, token: Cancellat
     .map_err(|e| logging::error!(e.into()))
     .expect("failed to initially convert .mzn to .fzn");
 
-    // let features = fzn_to_features(conversion.fzn())
-    //     .await
-    //     .map_err(|e| logging::error!(e.into()))
-    //     .expect("if we fail to get features, we can't run the AI and thus can't recover");
+    let features = fzn_to_features(conversion.fzn())
+        .await
+        .map_err(|e| logging::error!(e.into()))
+        .expect("if we fail to get features, we can't run the AI and thus can't recover");
 
     loop {
         timer.await;
-        // let schedule = static_schedule(&args, cores)
-        //     .await
-        //     .map_err(|e| logging::error!(e.into()))
-        //     .unwrap();
-        // let schedule = ai
-        //     .schedule(&features, cores)
-        //     .map_err(|e| logging::error!(e.into()))
-        //     .unwrap();
-        let schedule = scehdule2();
+        let schedule = ai
+            .schedule(&features, cores)
+            .map_err(|e| logging::error!(e.into()))
+            .unwrap();
         let schedule_len = schedule.len();
         if let Err(errors) = scheduler.apply(schedule).await {
             handle_schedule_errors(errors, schedule_len);
@@ -84,20 +76,4 @@ fn handle_schedule_errors(errors: Vec<solver_manager::Error>, schedule_len: usiz
     if errors_len == schedule_len {
         panic!("all solvers failed");
     }
-}
-
-fn scehdule2() -> Portfolio {
-    vec![
-        // SolverInfo::new("coinbc".to_string(), 1),
-        SolverInfo::new("gecode".to_string(), 1),
-        // SolverInfo::new("picat".to_string(), 1),
-        // SolverInfo::new("cp-sat".to_string(), 1),
-        // SolverInfo::new("chuffed".to_string(), 1),
-        // SolverInfo::new("yuck".to_string(), 1),
-        // SolverInfo::new( "xpress".to_string(), cores / 10),
-        // SolverInfo::new( "scip".to_string(), cores / 10),
-        // SolverInfo::new( "highs".to_string(), cores / 10),
-        // SolverInfo::new( "gurobi".to_string(), cores / 10),
-        // SolverInfo::new("coinbc".to_string(), cores / 2),
-    ]
 }

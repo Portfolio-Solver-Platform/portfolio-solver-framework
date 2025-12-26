@@ -1,7 +1,7 @@
 use crate::args::{Args, DebugVerbosityLevel};
 use crate::insert_objective::insert_objective;
 use crate::model_parser::{ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type};
-use crate::process_tree::{get_process_tree_memory, send_signal_to_tree};
+use crate::process_tree::get_process_tree_memory;
 use crate::scheduler::ScheduleElement;
 use crate::solver_output::{Output, Solution, Status};
 use crate::{mzn_to_fzn, solver_output};
@@ -505,8 +505,6 @@ impl SolverManager {
         };
         let gpid = unistd::Pid::from_raw(-(pid as i32));
         let _ = signal::kill(gpid, signal);
-
-        // send_signal_to_tree(pid, signal);
 
         Ok(())
     }
