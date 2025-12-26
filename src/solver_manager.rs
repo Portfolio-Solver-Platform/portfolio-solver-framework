@@ -498,15 +498,15 @@ impl SolverManager {
         id: u64,
         signal: Signal,
     ) -> std::result::Result<(), Error> {
-        let pid = {
-            let map = solvers.lock().await;
-            match map.get(&id) {
-                Some(state) => state.pid,
-                None => return Err(Error::InvalidSolver(format!("Solver {id} not running"))),
-            }
+        let map = solvers.lock().await;
+        let pid = match map.get(&id) {
+            Some(state) => state.pid,
+            None => return Err(Error::InvalidSolver(format!("Solver {id} not running"))),
         };
+        let gpid = unistd::Pid::from_raw(-(pid as i32));
+        let _ = signal::kill(gpid, signal);
 
-        send_signal_to_tree(pid, signal);
+        // send_signal_to_tree(pid, signal);
 
         Ok(())
     }
@@ -659,17 +659,10 @@ impl SolverManager {
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         id: u64,
     ) -> std::result::Result<(), Error> {
-        let pid = {
-            let map = solvers.lock().await;
-            match map.get(&id) {
-                Some(state) => state.pid,
-                None => return Err(Error::InvalidSolver(format!("Solver {id} not running"))),
-            }
-        };
-
-        let gpid = unistd::Pid::from_raw(-(pid as i32));
-        let _ = signal::kill(gpid, Signal::SIGTERM);
-        let _ = signal::kill(gpid, Signal::SIGCONT);
+        let mut map = solvers.lock().await;
+        if map.remove(&id).is_none() {
+            return Err(Error::InvalidSolver(format!("Solver {id} not running")));
+        }
 
         Ok(())
     }
