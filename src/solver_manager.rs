@@ -58,6 +58,7 @@ impl Drop for SolverProcess {
     fn drop(&mut self) {
         let gpid = unistd::Pid::from_raw(-(self.pid as i32));
         let _ = signal::kill(gpid, Signal::SIGTERM);
+        let _ = signal::kill(gpid, Signal::SIGCONT);
     }
 }
 
@@ -668,6 +669,7 @@ impl SolverManager {
 
         let gpid = unistd::Pid::from_raw(-(pid as i32));
         let _ = signal::kill(gpid, Signal::SIGTERM);
+        let _ = signal::kill(gpid, Signal::SIGCONT);
 
         Ok(())
     }
