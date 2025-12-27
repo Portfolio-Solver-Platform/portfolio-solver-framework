@@ -60,6 +60,7 @@ impl Drop for SolverProcess {
         let gpid = unistd::Pid::from_raw(-(self.pid as i32));
         let _ = signal::kill(gpid, Signal::SIGTERM);
         let _ = signal::kill(gpid, Signal::SIGCONT);
+        // let _ = crate::process_tree::recursive_force_kill(self.pid, &self.name);
     }
 }
 
@@ -235,7 +236,7 @@ impl SolverManager {
         let exe_name = exe_path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "minizinc".to_string());
+            .unwrap_or_else(|| "lol".to_string());
 
         // Taskset approach: allocate cores before building the command
         // let mut allocated_cores: Vec<usize> = Vec::new();
