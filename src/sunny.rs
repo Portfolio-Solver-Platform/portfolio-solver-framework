@@ -38,15 +38,20 @@ pub async fn sunny(args: Args, mut ai: impl Ai, config: Config, token: Cancellat
     .map_err(|e| logging::error!(e.into()))
     .expect("failed to initially convert .mzn to .fzn");
 
-    let features = fzn_to_features(conversion.fzn())
-        .await
-        .map_err(|e| logging::error!(e.into()))
-        .expect("if we fail to get features, we can't run the AI and thus can't recover");
+    // let features = fzn_to_features(conversion.fzn())
+    //     .await
+    //     .map_err(|e| logging::error!(e.into()))
+    //     .expect("if we fail to get features, we can't run the AI and thus can't recover");
 
     loop {
         timer.await;
-        let schedule = ai
-            .schedule(&features, cores)
+        // let schedule = ai
+        //     .schedule(&features, cores)
+        //     .map_err(|e| logging::error!(e.into()))
+        //     .unwrap();
+
+        let schedule = static_schedule(&args, cores)
+            .await
             .map_err(|e| logging::error!(e.into()))
             .unwrap();
         let schedule_len = schedule.len();

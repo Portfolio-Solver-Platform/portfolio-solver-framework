@@ -52,6 +52,7 @@ enum Msg {
 struct SolverProcess {
     pid: u32,
     best_objective: Option<ObjectiveValue>,
+    name: String,
 }
 
 impl Drop for SolverProcess {
@@ -230,6 +231,12 @@ impl SolverManager {
             (conversion_paths.fzn().to_path_buf(), None)
         };
 
+        let exe_path = Path::new(&self.args.minizinc_exe);
+        let exe_name = exe_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "minizinc".to_string());
+
         // Taskset approach: allocate cores before building the command
         // let mut allocated_cores: Vec<usize> = Vec::new();
         // #[cfg(target_os = "linux")]
@@ -308,6 +315,7 @@ impl SolverManager {
                 SolverProcess {
                     pid,
                     best_objective: objective,
+                    name: exe_name,
                 },
             );
         }
@@ -631,12 +639,16 @@ impl SolverManager {
         self.objective_type
     }
 
-    async fn kill_solver(
-        solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
-        id: u64,
-    ) -> std::result::Result<(), Error> {
+    async fn kill_solver(solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>, id: u64) -> Result<()> {
         let mut map = solvers.lock().await;
-        if map.remove(&id).is_none() {
+        if let Some(solver) = map.remove(&id) {
+            let pid = solver.pid;
+            let name = solver.name.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let _ = crate::process_tree::recursive_force_kill(pid, &name); // we tried to kill, but if it failed we ignore
+            });
+        } else {
             return Err(Error::InvalidSolver(format!("Solver {id} not running")));
         }
 
