@@ -52,9 +52,19 @@ RUN wget https://github.com/informarte/yuck/releases/download/20251106/yuck-2025
     && unzip yuck-20251106.zip -d /opt \
     && mv /opt/yuck-20251106 /opt/yuck \
     && chmod +x /opt/yuck/bin/yuck \
-    && rm yuck-20251106.zip \
-    && apt-get remove -y unzip
+    && rm yuck-20251106.zip
 
+FROM base AS or-tools
+
+RUN wget https://github.com/google/or-tools/releases/download/v9.14/or-tools_amd64_ubuntu-24.04_cpp_v9.14.6206.tar.gz -O or-tools.tar.gz \
+    && tar -xzvf or-tools.tar.gz \
+    && rm or-tools.tar.gz \
+    && mv or-tools_x86_64_Ubuntu-24.04_cpp_v9.14.6206 /or-tools \
+    && mkdir /opt/or-tools \
+    && mv /or-tools/bin /opt/or-tools/bin \
+    && mv /or-tools/lib /opt/or-tools/lib \
+    && cp -r /or-tools/share /opt/or-tools/share \
+    && jq '.executable = "/opt/or-tools/bin/fzn-cp-sat"' /or-tools/share/minizinc/solvers/cp-sat.msc > /opt/or-tools/share/minizinc/solvers/cp-sat.msc
 
 FROM base AS solver-configs
 
@@ -69,6 +79,8 @@ RUN jq '.mznlib = "/usr/local/share/minizinc/huub/"' ./huub.msc.temp > ./huub.ms
 COPY --from=yuck /opt/yuck/mzn/yuck.msc ./yuck.msc.template
 RUN jq '.executable = "/opt/yuck/bin/yuck"' ./yuck.msc.template > yuck.msc.temp
 RUN jq '.mznlib = "/opt/yuck/mzn/lib/"' ./yuck.msc.temp > ./yuck.msc
+COPY --from=or-tools /or-tools/share/minizinc/solvers/cp-sat.msc ./cp-sat.msc.template
+RUN jq '.executable = "/opt/or-tools/bin/fzn-cp-sat"' ./cp-sat.msc.template > cp-sat.msc
 # Gecode should only be used for compilation, not actually run, so don't correct its executable path
 RUN cp ./gecode.msc.template ./gecode.msc
 
@@ -103,6 +115,8 @@ COPY --from=huub /huub/target/release/fzn-huub /usr/local/bin/fzn-huub
 COPY --from=huub /huub/share/minizinc/huub/ /usr/local/share/minizinc/huub/
 
 COPY --from=yuck /opt/yuck/ /opt/yuck/
+
+COPY --from=or-tools /opt/or-tools/ /opt/or-tools/
 
 # Set our solver as the default
 RUN echo '{"tagDefaults": [["", "org.psp.sunny"]]}' > $HOME/.minizinc/Preferences.json
