@@ -63,8 +63,10 @@ RUN wget https://github.com/google/or-tools/releases/download/v9.14/or-tools_amd
     && mkdir /opt/or-tools \
     && mv /or-tools/bin /opt/or-tools/bin \
     && mv /or-tools/lib /opt/or-tools/lib \
-    && cp -r /or-tools/share /opt/or-tools/share \
-    && jq '.executable = "/opt/or-tools/bin/fzn-cp-sat"' /or-tools/share/minizinc/solvers/cp-sat.msc > /opt/or-tools/share/minizinc/solvers/cp-sat.msc
+    && mv /or-tools/share /opt/or-tools/share \
+    && jq '.executable = "/opt/or-tools/bin/fzn-cp-sat"' /opt/or-tools/share/minizinc/solvers/cp-sat.msc \
+     | jq '.mznlib = "/opt/or-tools/share/minizinc/cp-sat"' > cp-sat.msc.temp \
+    && mv cp-sat.msc.temp /opt/or-tools/share/minizinc/solvers/cp-sat.msc
 
 FROM base AS solver-configs
 
@@ -79,8 +81,7 @@ RUN jq '.mznlib = "/usr/local/share/minizinc/huub/"' ./huub.msc.temp > ./huub.ms
 COPY --from=yuck /opt/yuck/mzn/yuck.msc ./yuck.msc.template
 RUN jq '.executable = "/opt/yuck/bin/yuck"' ./yuck.msc.template > yuck.msc.temp
 RUN jq '.mznlib = "/opt/yuck/mzn/lib/"' ./yuck.msc.temp > ./yuck.msc
-COPY --from=or-tools /or-tools/share/minizinc/solvers/cp-sat.msc ./cp-sat.msc.template
-RUN jq '.executable = "/opt/or-tools/bin/fzn-cp-sat"' ./cp-sat.msc.template > cp-sat.msc
+COPY --from=or-tools /opt/or-tools/share/minizinc/solvers/* .
 # Gecode should only be used for compilation, not actually run, so don't correct its executable path
 RUN cp ./gecode.msc.template ./gecode.msc
 
