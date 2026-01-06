@@ -21,7 +21,9 @@ pub async fn sunny(
 
     let result = sunny_inner(args, ai, &config, &mut scheduler).await;
 
-    let _ = scheduler.solver_manager.stop_all_solvers().await;
+    if let Err(e) = scheduler.solver_manager.stop_all_solvers().await {
+        handle_schedule_errors(e);
+    }
     result
 }
 
