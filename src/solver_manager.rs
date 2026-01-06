@@ -1,24 +1,24 @@
 use crate::args::{Args, DebugVerbosityLevel};
 use crate::insert_objective::insert_objective;
 use crate::model_parser::{ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type};
-use crate::process_tree::{get_process_tree_memory, recursive_force_kill};
+use crate::process_tree::{
+    collect_descendants, get_process_pgid, get_process_tree_memory, recursive_force_kill,
+};
 use crate::scheduler::ScheduleElement;
 use crate::solver_output::{Output, Solution, Status};
 use crate::{logging, mzn_to_fzn, solver_output};
 use futures::future::join_all;
-
 use nix::errno::Errno;
 #[cfg(target_os = "linux")]
 use nix::sched::{CpuSet, sched_setaffinity};
 use nix::sys::signal::{self, Signal};
-
 use nix::unistd;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use sysinfo::System;
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, mpsc};
@@ -57,13 +57,12 @@ struct SolverProcess {
 
 impl Drop for SolverProcess {
     fn drop(&mut self) {
-        let gpid = unistd::Pid::from_raw(-(self.pid as i32));
-        let _ = signal::kill(gpid, Signal::SIGTERM);
-        let _ = signal::kill(gpid, Signal::SIGCONT);
+        let _ = SolverManager::send_singnal_to_solver_inner(
+            self.pid,
+            vec![Signal::SIGTERM, Signal::SIGCONT],
+        );
         let pid_clone = self.pid;
-        // tokio::spawn(async move {
-        //     let _ = crate::process_tree::recursive_force_kill(pid_clone).await;
-        // });
+
         std::thread::spawn(move || {
             let _ = recursive_force_kill(pid_clone);
         });
@@ -464,36 +463,62 @@ impl SolverManager {
         }
     }
 
-    // could be optimized to be able to send multiple signals to a process at a time, instead of traversing it twice
-    async fn send_signal_to_solver(
+    async fn send_signals_to_solver(
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         id: u64,
-        signal: Signal,
-    ) -> std::result::Result<(), Error> {
+        signals: Vec<Signal>,
+    ) -> Result<()> {
         let map = solvers.lock().await;
         let pid = match map.get(&id) {
             Some(state) => state.pid,
             None => return Err(Error::InvalidSolver(format!("Solver {id} not running"))),
         };
-        dbg!(signal, id);
-        let gpid = unistd::Pid::from_raw(-(pid as i32));
-        match signal::kill(gpid, signal) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                eprintln!("Failed to send signal {:?} to solver {} (pid: {}, gpid: {}): {}", signal, id, pid, -(pid as i32), e);
-                Err(Error::InvalidSolver(format!("Failed to send signal to solver {id}: {e}")))
-            }
-        }
+        Self::send_singnal_to_solver_inner(pid, signals)
     }
 
-    async fn send_signal_to_solvers(
+    fn send_singnal_to_solver_inner(pid: u32, signals: Vec<Signal>) -> Result<()> {
+        let system = System::new_with_specifics(
+            RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
+        );
+        let mut pids_to_kill = HashSet::new();
+
+        if let Some(target_pgid_raw) = get_process_pgid(pid) {
+            let target_pgid = target_pgid_raw as u32;
+
+            for (pid, _process) in system.processes() {
+                if let Some(proc_pgid) = get_process_pgid(pid.as_u32()) {
+                    if proc_pgid as u32 == target_pgid {
+                        pids_to_kill.insert(*pid);
+                    }
+                }
+            }
+        }
+        let current_targets: Vec<Pid> = pids_to_kill.iter().cloned().collect();
+        for target in current_targets {
+            collect_descendants(&system, target, &mut pids_to_kill);
+        }
+
+        for pid in &pids_to_kill {
+            for signal in signals.iter() {
+                let _ = signal::kill(unistd::Pid::from_raw(pid.as_u32() as i32), *signal);
+            }
+        }
+        // let gpid = unistd::Pid::from_raw(-(pid as i32));
+        for signal in signals {
+            let _ = signal::kill(unistd::Pid::from_raw(pid as i32), signal);
+        }
+
+        Ok(())
+    }
+
+    async fn send_signals_to_solvers(
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         ids: &[u64],
-        signal: Signal,
+        signals: Vec<Signal>,
     ) -> std::result::Result<(), Vec<Error>> {
         let futures = ids
             .iter()
-            .map(|id| Self::send_signal_to_solver(solvers.clone(), *id, signal));
+            .map(|id| Self::send_signals_to_solver(solvers.clone(), *id, signals.clone()));
         let results = join_all(futures).await;
         let errors: Vec<Error> = results.into_iter().filter_map(|res| res.err()).collect();
 
@@ -504,36 +529,36 @@ impl SolverManager {
         }
     }
 
-    async fn send_signal_to_all_solvers(
+    async fn send_signals_to_all_solvers(
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
-        signal: Signal,
+        signals: Vec<Signal>,
     ) -> std::result::Result<(), Vec<Error>> {
         let ids: Vec<u64> = { solvers.lock().await.keys().cloned().collect() };
-        Self::send_signal_to_solvers(solvers.clone(), &ids, signal).await
+        Self::send_signals_to_solvers(solvers.clone(), &ids, signals).await
     }
 
     pub async fn suspend_solver(&self, id: u64) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(self.solvers.clone(), id, Signal::SIGSTOP).await
+        Self::send_signals_to_solver(self.solvers.clone(), id, vec![Signal::SIGSTOP]).await
     }
 
     pub async fn suspend_solvers(&self, ids: &[u64]) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(self.solvers.clone(), ids, Signal::SIGSTOP).await
+        Self::send_signals_to_solvers(self.solvers.clone(), ids, vec![Signal::SIGSTOP]).await
     }
 
     pub async fn suspend_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_all_solvers(self.solvers.clone(), Signal::SIGSTOP).await
+        Self::send_signals_to_all_solvers(self.solvers.clone(), vec![Signal::SIGSTOP]).await
     }
 
     pub async fn resume_solver(&self, id: u64) -> std::result::Result<(), Error> {
-        Self::send_signal_to_solver(self.solvers.clone(), id, Signal::SIGCONT).await
+        Self::send_signals_to_solver(self.solvers.clone(), id, vec![Signal::SIGCONT]).await
     }
 
     pub async fn resume_solvers(&self, ids: &[u64]) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_solvers(self.solvers.clone(), ids, Signal::SIGCONT).await
+        Self::send_signals_to_solvers(self.solvers.clone(), ids, vec![Signal::SIGCONT]).await
     }
 
     pub async fn resume_all_solvers(&self) -> std::result::Result<(), Vec<Error>> {
-        Self::send_signal_to_all_solvers(self.solvers.clone(), Signal::SIGCONT).await
+        Self::send_signals_to_all_solvers(self.solvers.clone(), vec![Signal::SIGCONT]).await
     }
 
     async fn _stop_solver(

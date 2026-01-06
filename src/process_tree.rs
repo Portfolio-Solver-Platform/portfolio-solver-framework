@@ -3,7 +3,6 @@ use nix::unistd;
 use std::collections::HashSet;
 use std::time::Duration;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-use tokio::time::sleep;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -57,7 +56,7 @@ pub fn recursive_force_kill(root_pid: u32) -> Result<()> {
     Ok(())
 }
 
-fn collect_descendants(system: &System, parent: Pid, acc: &mut HashSet<Pid>) {
+pub fn collect_descendants(system: &System, parent: Pid, acc: &mut HashSet<Pid>) {
     for (pid, process) in system.processes() {
         if process.parent() == Some(parent) {
             // If we haven't seen this child yet, add it and recurse
