@@ -83,7 +83,8 @@ RUN wget https://github.com/chocoteam/choco-solver/archive/refs/tags/v4.10.18.ta
     && mv /choco/parsers/src/main/minizinc/mzn_lib /opt/choco/share/minizinc/choco_lib \
     && jq '.executable = "/opt/choco/bin/fzn-choco.sh"' /choco/parsers/src/main/minizinc/choco.msc \
      | jq '.mznlib = "/opt/choco/share/minizinc/choco_lib"' > /opt/choco/share/minizinc/solvers/choco.msc \
-    && sed -i 's&JAR_FILE=.*&JAR_FILE="/opt/choco/bin/choco.jar"&g' /opt/choco/bin/fzn-choco.py
+    && sed -i 's&JAR_FILE=.*&JAR_FILE="/opt/choco/bin/choco.jar"&g' /opt/choco/bin/fzn-choco.py \
+    && rm -rf /choco
 
 FROM base AS solver-configs
 
