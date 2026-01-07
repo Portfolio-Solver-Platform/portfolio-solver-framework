@@ -208,10 +208,7 @@ impl SolverManager {
     ) -> Result<()> {
         let solver_name = &elem.info.name;
         let cores = elem.info.cores;
-        let conversion_paths = self
-            .mzn_to_fzn
-            .convert(solver_name)
-            .await?;
+        let conversion_paths = self.mzn_to_fzn.convert(solver_name).await?;
 
         let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
             if let Ok(new_temp_file) =
