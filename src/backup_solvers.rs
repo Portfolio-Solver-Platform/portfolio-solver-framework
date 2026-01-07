@@ -1,10 +1,18 @@
 use crate::args::Args;
 use crate::config::Config;
-use crate::logging;
-use crate::mzn_to_fzn::ConversionError;
 use tokio::process::Command;
 
-pub async fn run_backup_solver(args: &Args, cores: usize) {
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Command failed")]
+    CommandFailed,
+    #[error("IO error")]
+    Io(#[from] std::io::Error),
+}
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// returns if it succesfully ran the backup solver
+pub async fn run_backup_solver(args: &Args, cores: usize) -> Result<()> {
     let config = Config::new(args);
     let mut cmd = Command::new(&args.minizinc_exe);
     cmd.arg("--solver").arg("cp-sat");
@@ -32,23 +40,13 @@ pub async fn run_backup_solver(args: &Args, cores: usize) {
     }
     cmd.arg("-p").arg(cores.to_string());
 
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            logging::error!(ConversionError::Io(e.into()).into());
-            return;
-        }
-    };
+    let mut child = cmd.spawn()?;
 
-    let status = match child.wait().await {
-        Ok(s) => s,
-        Err(e) => {
-            logging::error!(ConversionError::Io(e.into()).into());
-            return;
-        }
-    };
+    let status = child.wait().await?;
 
-    if !status.success() {
-        logging::error!(ConversionError::CommandFailed(status).into());
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::CommandFailed)
     }
 }

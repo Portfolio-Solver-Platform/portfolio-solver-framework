@@ -1,8 +1,8 @@
 #!/bin/bash
 
-PROBLEMS_DIR="../../psp/problems"
+PROBLEMS_DIR="../../../psp/problems/prop_stress"
 TIMEOUT_SECONDS=15
-SOLVER_PATH="./target/release/portfolio-solver-framework"
+SOLVER_PATH="./../target/release/portfolio-solver-framework"
 
 if command -v timeout &> /dev/null; then
     TIMEOUT_CMD="timeout"
@@ -34,7 +34,7 @@ solved_instances=0
 timeout_instances=0
 failed_instances=0
 
-for problem_dir in "$PROBLEMS_DIR"/*/; do
+for problem_dir in "$PROBLEMS_DIR"/; do
     problem_name=$(basename "$problem_dir")
 
     [[ ! -d "$problem_dir" ]] && continue
