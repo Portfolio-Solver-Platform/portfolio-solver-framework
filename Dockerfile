@@ -16,8 +16,9 @@ RUN cargo build --release --locked
 
 FROM builder AS ci
 
-RUN cargo install cargo-audit --locked
-COPY ./tests .
+FROM final AS ci-integration
+
+COPY ./tests ./tests
 
 FROM rust AS rust-base
 
@@ -136,7 +137,7 @@ COPY --from=pumpkin /opt/pumpkin/share/minizinc/solvers/* .
 # Gecode should only be used for compilation, not actually run, so don't correct its executable path
 RUN cp ./gecode.msc.template ./gecode.msc
 
-FROM base
+FROM base AS final
 
 # Install mzn2feat
 # TODO: Move it into its own image (to improve caching)
