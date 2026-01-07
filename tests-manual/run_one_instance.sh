@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PROBLEMS_DIR="../../psp/problems"
+PROBLEMS_DIR="../../../psp/problems"
 TIMEOUT_SECONDS=21
 SOLVER_PATH="./target/release/portfolio-solver-framework"
 
