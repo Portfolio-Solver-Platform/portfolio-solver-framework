@@ -18,7 +18,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs \
 COPY src ./src
 RUN cargo build --release --locked
 
-FROM builder as ci
+FROM builder AS ci
 
 RUN cargo install cargo-audit --locked
 
