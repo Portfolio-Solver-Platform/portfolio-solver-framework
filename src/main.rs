@@ -73,6 +73,9 @@ async fn main() {
 
     if result.is_err() {
         logging::error_msg!("Portfolio solver failed, falling back to backup solver");
-        run_backup_solver(&args, cores).await;
+        if let Err(e) = run_backup_solver(&args, cores).await {
+            logging::error!(e.into());
+            exit(1)
+        }
     }
 }
