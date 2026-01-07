@@ -30,14 +30,12 @@ jobs:
       uses: docker/build-push-action@v6
       with:
         target: builder
-        push: true
+        push: false
         load: true
         tags: framework:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    # - name: Build
-    #   run: docker run -t framework:latest cargo build --verbose --locked
     - name: Tests
       run: docker run -t framework:latest cargo test --verbose --locked
     - name: Audit
