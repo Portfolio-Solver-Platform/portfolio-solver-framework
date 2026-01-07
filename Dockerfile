@@ -17,6 +17,7 @@ RUN cargo build --release --locked
 FROM builder AS ci
 
 RUN cargo install cargo-audit --locked
+COPY ./tests .
 
 FROM rust AS rust-base
 
