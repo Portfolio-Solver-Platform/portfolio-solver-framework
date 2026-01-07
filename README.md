@@ -35,3 +35,9 @@ To make it available as a solver to MiniZinc, take the `solver.msc.template` and
 
 and remove the `.template` suffix from the file name and replace `${EXECUTABLE_PATH}` in the file with the path to the executable.
 
+
+## Testing
+
+### Prerequisits
+- Minizinc is installed
+- This solver has been added to minizinc as a solver and is called sunny
