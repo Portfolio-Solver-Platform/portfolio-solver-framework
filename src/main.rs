@@ -9,6 +9,7 @@ mod model_parser;
 mod mzn_to_fzn;
 mod process_tree;
 mod scheduler;
+mod solver_discovery;
 mod solver_manager;
 mod solver_output;
 mod static_schedule;
