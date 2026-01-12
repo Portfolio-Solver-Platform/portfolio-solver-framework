@@ -5,6 +5,7 @@ use crate::process_tree::{
     get_process_tree_memory, recursive_force_kill, send_signals_to_process_tree,
 };
 use crate::scheduler::ScheduleElement;
+use crate::solver_discovery::{Executable, SolverInputType};
 use crate::solver_output::{Output, Solution, Status};
 use crate::{logging, mzn_to_fzn, solver_discovery, solver_output};
 use futures::future::join_all;
@@ -72,6 +73,7 @@ pub struct SolverManager {
     mzn_to_fzn: mzn_to_fzn::CachedConverter,
     objective_inserter: ObjectiveInserter,
     best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
+    solver_info: Arc<solver_discovery::Solvers>,
     objective_type: ObjectiveType,
     solver_args: HashMap<String, Vec<String>>,
     available_cores: Arc<Mutex<BTreeSet<usize>>>, // assume that smallest ids is fastest cores, hence we use btreeset to sort the core id's
@@ -115,6 +117,7 @@ impl SolverManager {
         Ok(Self {
             tx,
             solvers,
+            solver_info: solver_info.clone(),
             mzn_to_fzn: mzn_to_fzn::CachedConverter::new(args.clone()),
             args,
             best_objective,
@@ -163,7 +166,7 @@ impl SolverManager {
         }
     }
 
-    fn get_fzn_command(&self, fzn_path: &Path, solver_name: &str, cores: usize) -> Command {
+    fn get_solver_command(&self, fzn_path: &Path, solver_name: &str, cores: usize) -> Command {
         // Taskset approach (commented out, using sched_setaffinity instead)
         // let mut cmd = if !allocated_cores.is_empty() {
         //     let core_list = allocated_cores
@@ -179,8 +182,21 @@ impl SolverManager {
         //     Command::new(&self.args.minizinc_exe)
         // };
 
-        let mut cmd = Command::new(&self.args.minizinc_exe);
-        cmd.arg("--solver").arg(solver_name);
+        let solver = self.solver_info.get_by_name(solver_name);
+
+        let make_fzn_cmd = || {
+            let mut cmd = Command::new(&self.args.minizinc_exe);
+            cmd.arg("--solver").arg(solver_name);
+            cmd
+        };
+        let mut cmd = match solver {
+            Some(solver) => match solver.input_type() {
+                SolverInputType::Fzn => make_fzn_cmd(),
+                SolverInputType::Json => solver.executable().clone().to_command(),
+            },
+            None => make_fzn_cmd(),
+        };
+
         cmd.arg(fzn_path);
 
         // Apply solver-specific arguments from config
@@ -252,7 +268,7 @@ impl SolverManager {
         //     }
         // }
 
-        let mut fzn_cmd = self.get_fzn_command(&fzn_final_path, solver_name, cores);
+        let mut fzn_cmd = self.get_solver_command(&fzn_final_path, solver_name, cores);
         #[cfg(unix)]
         fzn_cmd.process_group(0); // let OS give it a group process id
         fzn_cmd.stderr(Stdio::piped());

@@ -28,6 +28,7 @@ pub enum SolverInputType {
     Json,
 }
 
+#[derive(Clone)]
 pub struct Executable(PathBuf);
 
 pub struct Solvers(Vec<Solver>);
@@ -55,7 +56,8 @@ impl Solvers {
         let mut solvers: Vec<Solver> = vec![];
         for solver_json in array {
             match Solver::from_json(solver_json) {
-                Ok(solver) => solvers.push(solver),
+                Ok(Some(solver)) => solvers.push(solver),
+                Ok(None) => {}
                 Err(e) => logging::error!(e.into()),
             }
         }
@@ -65,17 +67,24 @@ impl Solvers {
 }
 
 impl Solver {
-    fn from_json(json: Value) -> std::result::Result<Self, SolverParseError> {
+    fn from_json(json: Value) -> SolverParseResult<Option<Self>> {
         let Value::Object(mut object) = json else {
             return Err(SolverParseError::NotAnObject(json));
         };
 
-        Ok(Self {
-            name: Self::string_from_json("name", &mut object)?,
-            executable: Self::executable_from_json(&mut object)?,
+        let name = Self::string_from_json("name", &mut object)?;
+
+        let Some(executable_result) = Self::executable_from_json(&mut object) else {
+            logging::info!("Solver with name '{name}' has no 'executable' field");
+            return Ok(None);
+        };
+
+        Ok(Some(Self {
+            name: name,
+            executable: executable_result?,
             supported_std_flags: Self::std_flags_from_json(&mut object)?,
             input_type: Self::input_type_from_json(&mut object)?,
-        })
+        }))
     }
 
     fn field_from_json(
@@ -121,9 +130,20 @@ impl Solver {
         Ok(array)
     }
 
-    fn executable_from_json(object: &mut Map<String, Value>) -> SolverParseResult<Executable> {
-        let s = Self::string_from_json("executable", object)?;
-        Ok(Executable(s.into()))
+    fn executable_from_json(
+        object: &mut Map<String, Value>,
+    ) -> Option<SolverParseResult<Executable>> {
+        const FIELD_NAME: &str = "executable";
+
+        Self::field_from_json(FIELD_NAME, object).ok().map(|json| {
+            let Value::String(s) = json else {
+                return Err(SolverParseError::FieldNotAString(
+                    FIELD_NAME.to_string(),
+                    json,
+                ));
+            };
+            Ok(Executable(s.into()))
+        })
     }
 
     fn input_type_from_json(object: &mut Map<String, Value>) -> SolverParseResult<SolverInputType> {
@@ -155,6 +175,12 @@ impl Solver {
             f: supported_flags.contains("-f"),
             p: supported_flags.contains("-p"),
         })
+    }
+}
+
+impl Executable {
+    pub fn to_command(self) -> Command {
+        Command::new(self.0)
     }
 }
 
