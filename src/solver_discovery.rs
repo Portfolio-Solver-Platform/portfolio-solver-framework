@@ -33,6 +33,10 @@ pub struct Executable(PathBuf);
 pub struct Solvers(Vec<Solver>);
 
 impl Solvers {
+    pub fn empty() -> Self {
+        Self(Vec::new())
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Solver> {
         self.0.iter()
     }

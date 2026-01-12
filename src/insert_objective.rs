@@ -13,6 +13,10 @@ pub struct ObjectiveInserter {
 }
 
 impl ObjectiveInserter {
+    pub fn new(solvers: Arc<solver_discovery::Solvers>) -> Self {
+        Self { solvers }
+    }
+
     pub async fn insert_objective(
         &self,
         solver_name: &str,

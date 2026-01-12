@@ -1,12 +1,12 @@
 use crate::args::Args;
-use crate::insert_objective::insert_objective;
+use crate::insert_objective::ObjectiveInserter;
 use crate::model_parser::{ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type};
 use crate::process_tree::{
     get_process_tree_memory, recursive_force_kill, send_signals_to_process_tree,
 };
 use crate::scheduler::ScheduleElement;
 use crate::solver_output::{Output, Solution, Status};
-use crate::{logging, mzn_to_fzn, solver_output};
+use crate::{logging, mzn_to_fzn, solver_discovery, solver_output};
 use futures::future::join_all;
 use nix::errno::Errno;
 #[cfg(target_os = "linux")]
@@ -70,6 +70,7 @@ pub struct SolverManager {
     solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
     args: Args,
     mzn_to_fzn: mzn_to_fzn::CachedConverter,
+    objective_inserter: ObjectiveInserter,
     best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
     objective_type: ObjectiveType,
     solver_args: HashMap<String, Vec<String>>,
@@ -86,6 +87,7 @@ impl SolverManager {
     pub async fn new(
         args: Args,
         solver_args: HashMap<String, Vec<String>>,
+        solver_info: Arc<solver_discovery::Solvers>,
         token: CancellationToken,
     ) -> std::result::Result<Self, Error> {
         let objective_type = get_objective_type(&args.minizinc_exe, &args.model).await?;
@@ -116,6 +118,7 @@ impl SolverManager {
             mzn_to_fzn: mzn_to_fzn::CachedConverter::new(args.clone()),
             args,
             best_objective,
+            objective_inserter: ObjectiveInserter::new(solver_info),
             objective_type,
             solver_args,
             available_cores: Arc::new(Mutex::new(cores)),
@@ -211,8 +214,15 @@ impl SolverManager {
         let conversion_paths = self.mzn_to_fzn.convert(solver_name).await?;
 
         let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
-            if let Ok(new_temp_file) =
-                insert_objective(conversion_paths.fzn(), &self.objective_type, obj).await
+            if let Ok(new_temp_file) = self
+                .objective_inserter
+                .insert_objective(
+                    solver_name,
+                    conversion_paths.fzn(),
+                    &self.objective_type,
+                    obj,
+                )
+                .await
             {
                 (new_temp_file.file_path().to_path_buf(), Some(new_temp_file))
             } else {
