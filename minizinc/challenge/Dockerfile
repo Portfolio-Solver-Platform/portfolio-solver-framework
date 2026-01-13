@@ -112,26 +112,6 @@ RUN mkdir -p /opt/pumpkin/bin \
      | jq '.mznlib = "/opt/pumpkin/share/minizinc/pumpkin_lib"' > /opt/pumpkin/share/minizinc/solvers/pumpkin.msc \
     && rm -rf /pumpkin
 
-FROM base AS minizinc-source
-
-WORKDIR /source
-ENV MINIZINC_SOURCE_VERSION=2.9.4
-RUN wget -qO minizinc.tgz https://github.com/MiniZinc/MiniZincIDE/releases/download/${MINIZINC_SOURCE_VERSION}/MiniZincIDE-${MINIZINC_SOURCE_VERSION}-bundle-linux-x86_64.tgz \
-    && tar xf minizinc.tgz --strip-components=1 \
-    && rm minizinc.tgz \
-    && rm bin/minizinc bin/mzn2doc bin/MiniZincIDE
-
-FROM minizinc-source AS gecode
-
-WORKDIR /opt/gecode
-RUN mkdir bin \
-    && mkdir -p share/minizinc/solvers \
-    && mv /source/bin/fzn-gecode bin/ \
-    && mv /source/lib lib/ \
-    && mv /source/share/minizinc/gecode/ share/minizinc/gecode_lib/ \
-    && jq '.executable = "/opt/gecode/bin/fzn-gecode"' /source/share/minizinc/solvers/gecode.msc \
-     | jq '.mznlib = "/opt/gecode/share/minizinc/gecode_lib"' > share/minizinc/solvers/gecode.msc
-
 
 FROM base AS solver-configs
 
@@ -149,7 +129,8 @@ RUN jq '.mznlib = "/opt/yuck/mzn/lib/"' ./yuck.msc.temp > ./yuck.msc
 COPY --from=or-tools /opt/or-tools/share/minizinc/solvers/* .
 COPY --from=choco /opt/choco/share/minizinc/solvers/* .
 COPY --from=pumpkin /opt/pumpkin/share/minizinc/solvers/* .
-COPY --from=gecode /opt/gecode/share/minizinc/solvers/* .
+# Gecode should only be used for compilation, not actually run, so don't correct its executable path
+RUN cp ./gecode.msc.template ./gecode.msc
 
 FROM base AS final
 
@@ -164,7 +145,7 @@ RUN ln -s /opt/mzn2feat/bin/mzn2feat /usr/local/bin/mzn2feat \
 
 # Install Picat solver
 # TODO: Move it into its own image (to improve caching)
-RUN wget https://picat-lang.org/download/picat394_linux64.tar.gz \
+RUN wget http://picat-lang.org/download/picat394_linux64.tar.gz \
     && tar -xzf picat394_linux64.tar.gz -C /opt \
     && ln -s /opt/Picat/picat /usr/local/bin/picat \
     && rm picat394_linux64.tar.gz
@@ -184,9 +165,6 @@ COPY --from=yuck /opt/yuck/ /opt/yuck/
 COPY --from=or-tools /opt/or-tools/ /opt/or-tools/
 COPY --from=choco /opt/choco/ /opt/choco/
 COPY --from=pumpkin /opt/pumpkin/ /opt/pumpkin/
-COPY --from=gecode /opt/gecode/ /opt/gecode/
-# Gecode also uses dynamically linked libraries, so register these with the system
-RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf && ldconfig
 
 # Set our solver as the default
 RUN echo '{"tagDefaults": [["", "org.psp.sunny"]]}' > $HOME/.minizinc/Preferences.json
