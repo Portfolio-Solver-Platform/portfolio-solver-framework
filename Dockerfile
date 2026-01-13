@@ -16,8 +16,6 @@ RUN touch src/main.rs && cargo build --release --locked
 
 FROM minizinc/mznc2025:latest AS base
 
-ENV LD_LIBRARY_PATH=""
-
 WORKDIR /app
 
 # Fix paths for cargo
@@ -166,7 +164,7 @@ RUN ln -s /opt/mzn2feat/bin/mzn2feat /usr/local/bin/mzn2feat \
 
 # Install Picat solver
 # TODO: Move it into its own image (to improve caching)
-RUN wget http://picat-lang.org/download/picat394_linux64.tar.gz \
+RUN wget https://picat-lang.org/download/picat394_linux64.tar.gz \
     && tar -xzf picat394_linux64.tar.gz -C /opt \
     && ln -s /opt/Picat/picat /usr/local/bin/picat \
     && rm picat394_linux64.tar.gz
@@ -187,8 +185,8 @@ COPY --from=or-tools /opt/or-tools/ /opt/or-tools/
 COPY --from=choco /opt/choco/ /opt/choco/
 COPY --from=pumpkin /opt/pumpkin/ /opt/pumpkin/
 COPY --from=gecode /opt/gecode/ /opt/gecode/
-# Gecode also uses dynamically linked libraries
-ENV LD_LIBRARY_PATH="/opt/gecode/lib:$LD_LIBRARY_PATH"
+# Gecode also uses dynamically linked libraries, so register these with the system
+RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf && ldconfig
 
 # Set our solver as the default
 RUN echo '{"tagDefaults": [["", "org.psp.sunny"]]}' > $HOME/.minizinc/Preferences.json
