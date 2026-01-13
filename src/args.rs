@@ -113,14 +113,12 @@ pub enum Ai {
 #[derive(Debug, Clone, ValueEnum)]
 pub enum OutputMode {
     Dzn,
-    Json,
 }
 
 impl fmt::Display for OutputMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OutputMode::Dzn => write!(f, "dzn"),
-            OutputMode::Json => write!(f, "json"),
         }
     }
 }
