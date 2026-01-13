@@ -27,6 +27,3 @@ predicates = "3.1"
 assert_cmd = "2.1.2"
 
 
-[profile.release]
-debug = true
-
