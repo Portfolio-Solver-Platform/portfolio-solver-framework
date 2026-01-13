@@ -161,21 +161,6 @@ impl SolverManager {
     }
 
     fn get_fzn_command(&self, fzn_path: &Path, solver_name: &str, cores: usize) -> Command {
-        // Taskset approach (commented out, using sched_setaffinity instead)
-        // let mut cmd = if !allocated_cores.is_empty() {
-        //     let core_list = allocated_cores
-        //         .iter()
-        //         .map(|c| c.to_string())
-        //         .collect::<Vec<_>>()
-        //         .join(",");
-        //     let mut taskset_cmd = Command::new("taskset");
-        //     taskset_cmd.arg("-c").arg(core_list);
-        //     taskset_cmd.arg(&self.args.minizinc_exe);
-        //     taskset_cmd
-        // } else {
-        //     Command::new(&self.args.minizinc_exe)
-        // };
-
         let mut cmd = Command::new(&self.args.minizinc_exe);
         cmd.arg("--solver").arg(solver_name);
         cmd.arg(fzn_path);
@@ -221,26 +206,6 @@ impl SolverManager {
         } else {
             (conversion_paths.fzn().to_path_buf(), None)
         };
-
-        // Taskset approach: allocate cores before building the command
-        // let mut allocated_cores: Vec<usize> = Vec::new();
-        // #[cfg(target_os = "linux")]
-        // {
-        //     let mut available_cores_guard = self.available_cores.lock().await;
-        //     for _ in 0..cores {
-        //         if let Some(val) = available_cores_guard.pop_first() {
-        //             allocated_cores.push(val);
-        //         } else {
-        //             // Return already-allocated cores before erroring
-        //             for c in &allocated_cores {
-        //                 available_cores_guard.insert(*c);
-        //             }
-        //             return Err(Error::CPUCoresRetrieval(
-        //                 "Schedule contained more cores than there was available".to_string(),
-        //             ));
-        //         }
-        //     }
-        // }
 
         let mut fzn_cmd = self.get_fzn_command(&fzn_final_path, solver_name, cores);
         #[cfg(unix)]

@@ -97,7 +97,6 @@ async fn start_with_ai(
 
     let schedule = match features_result {
         Ok(features_result) => {
-            dbg!("got features");
             let features = features_result?;
             ai.schedule(&features, cores)
                 .map_err(|e| logging::error!(e.into()))?
