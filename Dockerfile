@@ -117,7 +117,7 @@ RUN mkdir -p /opt/pumpkin/bin \
 FROM base AS minizinc-source
 
 WORKDIR /source
-ENV MINIZINC_SOURCE_VERSION=2.8.5
+ENV MINIZINC_SOURCE_VERSION=2.9.4
 RUN wget -qO minizinc.tgz https://github.com/MiniZinc/MiniZincIDE/releases/download/${MINIZINC_SOURCE_VERSION}/MiniZincIDE-${MINIZINC_SOURCE_VERSION}-bundle-linux-x86_64.tgz \
     && tar xf minizinc.tgz --strip-components=1 \
     && rm minizinc.tgz \
