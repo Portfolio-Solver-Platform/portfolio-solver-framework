@@ -17,7 +17,7 @@ pub struct Solver {
     input_type: SolverInputType,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SupportedStdFlags {
     pub a: bool,
     pub i: bool,
@@ -62,6 +62,24 @@ impl Solvers {
         for solver_json in array {
             match Solver::from_json(solver_json) {
                 Ok(solver) => solvers.push(solver),
+                Err(SolverParseError::UnknownInputType {
+                    solver_id,
+                    input_type,
+                }) => {
+                    if input_type == "MZN" || input_type == "NL" {
+                        logging::info!(
+                            "Solver with ID '{solver_id}' has unsupported input type '{input_type}'"
+                        );
+                    } else {
+                        logging::error!(
+                            SolverParseError::UnknownInputType {
+                                solver_id,
+                                input_type
+                            }
+                            .into()
+                        );
+                    }
+                }
                 Err(e) => logging::error!(e.into()),
             }
         }
@@ -77,11 +95,12 @@ impl Solver {
             return Err(SolverParseError::NotAnObject(json));
         };
 
+        let id = Self::string_from_json("id", &mut object)?.to_lowercase();
         Ok(Self {
-            id: Self::string_from_json("id", &mut object)?.to_lowercase(),
             executable: Self::executable_from_json(&mut object).transpose()?,
             supported_std_flags: Self::std_flags_from_json(&mut object)?,
-            input_type: Self::input_type_from_json(&mut object)?,
+            input_type: Self::input_type_from_json(&id, &mut object)?,
+            id,
         })
     }
 
@@ -144,13 +163,19 @@ impl Solver {
         })
     }
 
-    fn input_type_from_json(object: &mut Map<String, Value>) -> SolverParseResult<SolverInputType> {
+    fn input_type_from_json(
+        solver_id: &str,
+        object: &mut Map<String, Value>,
+    ) -> SolverParseResult<SolverInputType> {
         let input_type_str = Self::string_from_json("inputType", object)?;
 
         match input_type_str.as_str() {
             "FZN" => Ok(SolverInputType::Fzn),
             "JSON" => Ok(SolverInputType::Json),
-            _ => Err(SolverParseError::UnknownSolverKind(input_type_str)),
+            _ => Err(SolverParseError::UnknownInputType {
+                solver_id: solver_id.to_owned(),
+                input_type: input_type_str,
+            }),
         }
     }
 
@@ -194,8 +219,11 @@ enum SolverParseError {
     #[error("Solver's field '{0}' is not an array: {1}")]
     FieldNotAnArray(String, Value),
 
-    #[error("Solver has unknown solver kind: {0}")]
-    UnknownSolverKind(String),
+    #[error("Solver with ID '{solver_id}' has unknown input type: {input_type}")]
+    UnknownInputType {
+        solver_id: String,
+        input_type: String,
+    },
 
     #[error("A std flag is not a string: {0}")]
     StdFlagNotAString(Value),

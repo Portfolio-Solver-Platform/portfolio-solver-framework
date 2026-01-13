@@ -30,7 +30,7 @@ impl ObjectiveInserter {
             .map(|solver| solver.input_type())
             .unwrap_or_else(|| {
                 logging::error_msg!(
-                    "Solver metadata could not be found for solver with name '{solver_name}'"
+                    "Solver metadata could not be found for solver with name '{solver_name}'. Perhaps it is not supported or not installed"
                 );
                 &SolverInputType::Fzn
             });

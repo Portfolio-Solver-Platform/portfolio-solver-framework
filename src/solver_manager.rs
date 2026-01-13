@@ -5,7 +5,7 @@ use crate::process_tree::{
     get_process_tree_memory, recursive_force_kill, send_signals_to_process_tree,
 };
 use crate::scheduler::ScheduleElement;
-use crate::solver_discovery::SolverInputType;
+use crate::solver_discovery::{SolverInputType, SupportedStdFlags};
 use crate::solver_output::{Output, Solution, Status};
 use crate::{logging, mzn_to_fzn, solver_discovery, solver_output};
 use futures::future::join_all;
@@ -224,7 +224,12 @@ impl SolverManager {
             logging::error_msg!("Solver '{solver_name}' does not have an arguments configuration");
         }
 
-        cmd.arg("-p").arg(cores.to_string());
+        let supports_p_flag = solver
+            .map(|solver| solver.supported_std_flags().p)
+            .unwrap_or(true);
+        if supports_p_flag {
+            cmd.arg("-p").arg(cores.to_string());
+        }
 
         Ok(cmd)
     }
