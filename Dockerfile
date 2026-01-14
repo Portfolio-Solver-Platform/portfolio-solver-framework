@@ -244,9 +244,7 @@ COPY --from=gecode /opt/gecode/ /opt/gecode/
 COPY --from=chuffed /opt/chuffed/ /opt/chuffed/
 COPY --from=dexter /opt/dexter/ /opt/dexter/
 
-# Set our solver as the default
-RUN echo '{"tagDefaults": [["", "org.psp.sunny"]]}' > $HOME/.minizinc/Preferences.json
-
+COPY ./minizinc/Preferences.json /root/.minizinc/
 COPY --from=builder /usr/src/app/target/release/portfolio-solver-framework /usr/local/bin/portfolio-solver-framework
 COPY command-line-ai ./command-line-ai
 
@@ -255,6 +253,11 @@ COPY command-line-ai ./command-line-ai
 # This is done at the very end to make sure it doesn't mess with other commands
 RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf \
     && ldconfig
+
+# NOTE: For CPLEX support:
+#       1. Copy the cplex/bin/libcplexXXXX.so file from your CPLEX installation into the root of this repository and rename it to libcplex.so (this requires the Linux installation of CPLEX).
+#       2. Uncomment the following line of code:
+# COPY ./libcplex.so .
 
 FROM builder AS ci
 
