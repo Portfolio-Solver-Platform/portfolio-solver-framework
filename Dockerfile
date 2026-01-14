@@ -132,6 +132,17 @@ RUN mkdir bin \
     && jq '.executable = "/opt/gecode/bin/fzn-gecode"' /source/share/minizinc/solvers/gecode.msc \
      | jq '.mznlib = "/opt/gecode/share/minizinc/gecode_lib"' > share/minizinc/solvers/gecode.msc
 
+FROM minizinc-source AS chuffed
+
+WORKDIR /opt/chuffed
+COPY ./minizinc/solvers/chuffed.msc.template .
+RUN mkdir bin \
+    && mkdir -p share/minizinc/solvers \
+    && mv /source/bin/fzn-chuffed bin/ \
+    && mv /source/share/minizinc/chuffed/ share/minizinc/chuffed_lib/ \
+    && jq '.executable = "/opt/chuffed/bin/fzn-chuffed"' chuffed.msc.template \
+     | jq '.mznlib = "/opt/chuffed/share/minizinc/chuffed_lib"' > share/minizinc/solvers/chuffed.msc
+
 
 FROM base AS solver-configs
 
@@ -150,6 +161,7 @@ COPY --from=or-tools /opt/or-tools/share/minizinc/solvers/* .
 COPY --from=choco /opt/choco/share/minizinc/solvers/* .
 COPY --from=pumpkin /opt/pumpkin/share/minizinc/solvers/* .
 COPY --from=gecode /opt/gecode/share/minizinc/solvers/* .
+COPY --from=chuffed /opt/chuffed/share/minizinc/solvers/* .
 
 FROM base AS final
 
@@ -185,7 +197,9 @@ COPY --from=or-tools /opt/or-tools/ /opt/or-tools/
 COPY --from=choco /opt/choco/ /opt/choco/
 COPY --from=pumpkin /opt/pumpkin/ /opt/pumpkin/
 COPY --from=gecode /opt/gecode/ /opt/gecode/
+COPY --from=chuffed /opt/chuffed/ /opt/chuffed/
 # Gecode also uses dynamically linked libraries, so register these with the system
+# Note that Chuffed may be dependent on these same linked libraries, but I'm not sure
 RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf && ldconfig
 
 # Set our solver as the default
