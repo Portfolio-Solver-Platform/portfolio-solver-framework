@@ -25,6 +25,9 @@ ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y \
     ca-certificates \
     libssl-dev \
     wget \
@@ -41,10 +44,15 @@ RUN apt-get update && apt-get install -y \
     libglu1-mesa \
     libegl1 \
     libfontconfig1 \
+    python3.13 \
     # Install rustup
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     # Cleanup
     && rm -rf /var/lib/apt/lists/*
+
+COPY command-line-ai/requirements.txt ./requirements.txt
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.13
+RUN python3.13 -m pip install -r ./requirements.txt
 
 FROM base AS huub
 
@@ -143,6 +151,7 @@ RUN mkdir bin \
     && jq '.executable = "/opt/chuffed/bin/fzn-chuffed"' chuffed.msc.template \
      | jq '.mznlib = "/opt/chuffed/share/minizinc/chuffed_lib"' > share/minizinc/solvers/chuffed.msc
 
+
 FROM base AS scip
 
 WORKDIR /opt/scip
@@ -216,6 +225,7 @@ COPY --from=chuffed /opt/chuffed/ /opt/chuffed/
 RUN echo '{"tagDefaults": [["", "org.psp.sunny"]]}' > $HOME/.minizinc/Preferences.json
 
 COPY --from=builder /usr/src/app/target/release/portfolio-solver-framework /usr/local/bin/portfolio-solver-framework
+COPY command-line-ai ./command-line-ai
 
 # Gecode also uses dynamically linked libraries, so register these with the system
 # Note that Chuffed may be dependent on these same linked libraries, but I'm not sure
