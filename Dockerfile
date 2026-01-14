@@ -187,6 +187,15 @@ RUN wget https://picat-lang.org/download/picat394_linux64.tar.gz \
 
 RUN git clone https://github.com/nfzhou/fzn_picat.git /opt/fzn_picat
 
+# Install SCIP from a .deb package. This requires updating apt-get lists
+COPY --from=scip /opt/scip/package.deb ./scip-package.deb
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository universe \
+    && apt-get install -y ./scip-package.deb \
+    && rm ./scip-package.deb \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install solver configurations
 COPY --from=solver-configs /solvers/*.msc /usr/local/share/minizinc/solvers/
 
@@ -202,15 +211,6 @@ COPY --from=choco /opt/choco/ /opt/choco/
 COPY --from=pumpkin /opt/pumpkin/ /opt/pumpkin/
 COPY --from=gecode /opt/gecode/ /opt/gecode/
 COPY --from=chuffed /opt/chuffed/ /opt/chuffed/
-# Install SCIP from a .deb package. This requires updating apt-get lists
-COPY --from=scip /opt/scip/package.deb ./scip-package.deb
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
-    && add-apt-repository universe \
-    && apt-get update \
-    && apt-get install -y ./scip-package.deb \
-    && rm ./scip-package.deb \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set our solver as the default
 RUN echo '{"tagDefaults": [["", "org.psp.sunny"]]}' > $HOME/.minizinc/Preferences.json
