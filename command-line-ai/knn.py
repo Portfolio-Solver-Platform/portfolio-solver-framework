@@ -21,6 +21,12 @@ CHUFFED_ID = "org.chuffed.chuffed"
 
 
 SOLVER_ORDER = [CHOCO_ID, CHUFFED_ID, CP_SAT_ID, GECODE_ID, HUUB_ID, PICAT_ID]
+# SOLVER_PARALLEL_CAPABILITIES = {
+#     CHUFFED_ID: [1],
+#     CP_SAT_ID: [1, 8],
+#     COIN_BC_ID: [1],
+#     HUUB_ID: [1],
+# }
 
 def parse_comma_separated_floats(input_str):
     try:
