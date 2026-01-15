@@ -21,12 +21,13 @@ CHUFFED_ID = "org.chuffed.chuffed"
 
 
 SOLVER_ORDER = [CHOCO_ID, CHUFFED_ID, CP_SAT_ID, GECODE_ID, HUUB_ID, PICAT_ID]
-# SOLVER_PARALLEL_CAPABILITIES = {
-#     CHUFFED_ID: [1],
-#     CP_SAT_ID: [1, 8],
-#     COIN_BC_ID: [1],
-#     HUUB_ID: [1],
-# }
+SOLVER_PARALLEL_CAPABILITIES = {
+    CHUFFED_ID: [1],
+    CP_SAT_ID: [1, 8],
+    COIN_BC_ID: [1],
+    HUUB_ID: [1],
+    PICAT_ID: [1]
+}
 
 def parse_comma_separated_floats(input_str):
     try:
@@ -47,32 +48,73 @@ def main():
     for solver, cores in sched:
         print(f"{solver},{cores}")
 
+def _calculate_allocations(weights, total_cores):
+    """Calculate proportional core allocations with remainder to best solver."""
+    total = weights.sum()
+    if total == 0:
+        return np.zeros_like(weights, dtype=int)
+    normalized = weights / total
+    floored = np.floor(normalized * total_cores).astype(int)
+    floored[np.argmax(normalized)] += total_cores - floored.sum()
+    return [int(x) for x in floored]
+
+
+def distribuite_cores(preds_log, total_cores):
+    remaining_cores = total_cores
+    final_allocations = [0] * len(preds_log)
+    weights = preds_log.copy()
+
+    while remaining_cores > 0:
+        allocations = _calculate_allocations(weights, remaining_cores)
+        for i, solver_id in enumerate(SOLVER_ORDER):
+            allocation = allocations[i]
+
+            if allocation == 0:
+                continue
+            
+            restrictions = SOLVER_PARALLEL_CAPABILITIES.get(solver_id)
+            
+            if restrictions is None:
+                final_allocations[i] = allocation
+                continue
+            if solver_id == CP_SAT_ID and allocation >= 5 and remaining_cores >= 8:
+                cores = max(8, allocation)
+            else:
+                cores = 1
+            
+            final_allocations[i] = cores
+            remaining_cores -= cores
+            weights[i] = 0
+            break
+        else: 
+            left_over = total_cores - sum(final_allocations) # due to core restrictions we might not have used all cores
+            if left_over > 0:
+                cp_sat_idx = SOLVER_ORDER.index(CP_SAT_ID)
+                if final_allocations[cp_sat_idx] + left_over >= 8:
+                    final_allocations[cp_sat_idx] += left_over
+                else:
+                    gecode_idx = SOLVER_ORDER.index(GECODE_ID)
+                    final_allocations[gecode_idx] += left_over
+                remaining_cores = 0
+                
+    return final_allocations
+
+
 def schedule(features: np.ndarray, total_cores: int) -> list[tuple[str, int]]:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(script_dir, 'data', 'knn_model.pkl')
-
     loaded_pipeline = joblib.load(model_path)
 
-
     features_2d = features.reshape(1, -1)
-    preds_log = loaded_pipeline.predict_proba(features_2d)[0] 
+    preds_log = loaded_pipeline.predict_proba(features_2d)[0]
+    final_allocations = distribuite_cores(preds_log, total_cores)
 
-    # temperature = 1.0
-    # probabilities = softmax(-preds_log / temperature)
+    return [
+        (SOLVER_ORDER[i], cores)
+        for i, cores in enumerate(final_allocations)
+        if cores > 0
+    ]
 
-    raw_allocations = preds_log * total_cores
-    final_allocations = np.floor(raw_allocations).astype(int)
-    remainder = total_cores - np.sum(final_allocations)
-    best_solver_idx = np.argmax(preds_log)
-    final_allocations[best_solver_idx] += remainder
-
-    schedule_list = []
-    for i, core_count in enumerate(final_allocations):
-        if core_count > 0:
-            solver_id = SOLVER_ORDER[i]
-            schedule_list.append((solver_id, int(core_count)))
-
-    return schedule_list
 
 if __name__ == "__main__":
     main()
