@@ -6,9 +6,19 @@
   "tags": ["portfolio"],
   "stdFlags": ["-p", "-f"],
   "extraFlags": [
+    ["--ai", "The AI used to determine the solver schedule dynamically (none, simple, command-line)", "string", "simple"],
+    ["--ai-config", "Configuration for the AI in format: <key1>=<value1>,<key2>=<value2>,...", "string", ""],
     ["--output-mode", "Output solutions in DZN format", "string", "dzn"],
     ["--output-objective", "Output the objective value as _objective for optimisation problems", "bool", ""],
-    ["--debug-verbosity", "", "string", ""]
+    ["--pin-yuck", "Pin the yuck solver processes to specific CPU cores", "bool", ""],
+    ["--ignore-search", "Enable free search for all solvers", "bool", ""],
+    ["--static-runtime", "Minimum time (in seconds) the initial static schedule will be run before using AI schedule", "int", "5"],
+    ["--restart-interval", "Seconds between solver restarts to share the upper bound found", "int", "5"],
+    ["--feature-timeout", "Time (in seconds) before skipping feature extraction and using timeout schedule", "int", "10"],
+    ["--minizinc-exe", "Path to the minizinc executable", "string", "minizinc"],
+    ["--static-schedule", "Path to the static schedule CSV file (format: <solver>,<cores>)", "string", ""],
+    ["--timeout-schedule", "Path to the timeout schedule CSV file (format: <solver>,<cores>)", "string", ""],
+    ["--verbosity", "Logging verbosity level (quiet, error, warning, info)", "string", "warning"]
   ],
   "inputType": "MZN",
   "supportsMzn": true,

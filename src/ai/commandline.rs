@@ -43,9 +43,9 @@ impl super::Ai for Ai {
             )));
         }
 
-        let k = parse_output_as_schedule(output.stdout);
-        dbg!(&k);
-        k
+        let sched = parse_output_as_schedule(output.stdout);
+        logging::info!("AI schedule: {:?}", sched);
+        sched
     }
 }
 

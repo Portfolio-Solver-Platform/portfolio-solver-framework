@@ -511,15 +511,22 @@ impl SolverManager {
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         id: u64,
     ) -> std::result::Result<(), Error> {
-        Self::kill_solver(solvers, id).await
+        let mut map = solvers.lock().await;
+        Self::kill_solver(id, &mut map).await
     }
 
     async fn _stop_solvers(
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         ids: &[u64],
     ) -> std::result::Result<(), Vec<Error>> {
-        let futures = ids.iter().map(|id| Self::kill_solver(solvers.clone(), *id));
-        let results = join_all(futures).await;
+        let mut results = Vec::new();
+        {
+            let mut map = solvers.lock().await;
+            for id in ids {
+                results.push(Self::kill_solver(*id, &mut map).await);
+            }
+        };
+
         let errors: Vec<Error> = results.into_iter().filter_map(|res| res.err()).collect();
 
         if errors.is_empty() {
@@ -532,12 +539,23 @@ impl SolverManager {
     async fn _stop_all_solvers(
         solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
     ) -> std::result::Result<(), Vec<Error>> {
-        let ids: Vec<u64> = {
-            let map = solvers.lock().await;
-            map.keys().copied().collect()
+        let mut results = Vec::new();
+
+        {
+            let mut map = solvers.lock().await;
+            let ids: Vec<u64> = map.keys().copied().collect();
+            for id in ids {
+                results.push(Self::kill_solver(id, &mut map).await);
+            }
         };
 
-        Self::_stop_solvers(solvers.clone(), &ids).await
+        let errors: Vec<Error> = results.into_iter().filter_map(|res| res.err()).collect();
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     pub async fn stop_solver(&self, id: u64) -> std::result::Result<(), Error> {
@@ -599,10 +617,13 @@ impl SolverManager {
         self.objective_type
     }
 
-    async fn kill_solver(solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>, id: u64) -> Result<()> {
-        let mut map = solvers.lock().await;
+    /// precondition: self.solvers is locked
+    async fn kill_solver(
+        id: u64,
+        solvers_map: &mut tokio::sync::MutexGuard<'_, HashMap<u64, SolverProcess>>,
+    ) -> Result<()> {
         // let RAII clean up the solver. look in drop function.
-        if map.remove(&id).is_none() {
+        if solvers_map.remove(&id).is_none() {
             return Err(Error::InvalidSolver(format!("Solver {id} not running")));
         }
 
