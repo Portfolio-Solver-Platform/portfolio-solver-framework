@@ -88,13 +88,13 @@ def distribuite_cores(preds_log, total_cores):
             break
         else: 
             left_over = total_cores - sum(final_allocations) # due to core restrictions we might not have used all cores
-            if left_over >= 0:
+            if left_over > 0:
                 cp_sat_idx = SOLVER_ORDER.index(CP_SAT_ID)
                 if final_allocations[cp_sat_idx] + left_over >= 8:
                     final_allocations[cp_sat_idx] += left_over
                 else:
-                    picat_idx = SOLVER_ORDER.index(GECODE_ID)
-                    final_allocations[picat_idx] += left_over
+                    gecode_idx = SOLVER_ORDER.index(GECODE_ID)
+                    final_allocations[gecode_idx] += left_over
                 remaining_cores = 0
                 
     return final_allocations
