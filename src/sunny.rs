@@ -66,8 +66,6 @@ async fn sunny_inner(
     }
 }
 
-
-
 async fn start_with_ai(
     args: &Args,
     ai: &mut impl Ai,
@@ -82,27 +80,26 @@ async fn start_with_ai(
 
     let static_runtime_duration = Duration::from_secs(args.static_runtime);
     let static_runtime_timeout_future = sleep(static_runtime_duration);
-    let feature_timeout_duration = Duration::from_secs(args.feature_timeout.max(args.static_runtime));    
+    let feature_timeout_duration =
+        Duration::from_secs(args.feature_timeout.max(args.static_runtime));
     let feature_timeout_timeout_future = sleep(feature_timeout_duration);
 
     let get_features_future = get_features(args, cancellation_token.clone());
 
-    let scheduler_task = scheduler.apply(initial_schedule.clone(), Some(cancellation_token.clone()));
+    let scheduler_task =
+        scheduler.apply(initial_schedule.clone(), Some(cancellation_token.clone()));
 
-    let feature_timeout_duration =
-        Duration::from_secs(args.feature_timeout.max(args.static_runtime)); // if static runtime is higher thatn feature_runtime, we anyways have to wait, so we have more time to extract features
-    let barrier = async {
-        tokio::join!(
-            timeout(feature_timeout_duration, get_features(args, cancellation_token.clone())),
-            sleep(static_runtime_duration)
-        )
-    };
-    tokio::pin!(barrier);
-
-    let scheduler_task = scheduler.apply(initial_schedule.clone(), Some(cancellation_token.clone()));
+    tokio::pin!(static_runtime_timeout_future);
+    tokio::pin!(feature_timeout_timeout_future);
+    tokio::pin!(get_features_future);
     tokio::pin!(scheduler_task);
 
-    let (features_result, static_schedule_finished) = tokio::select! {
+    let mut static_timeout_expired = false;
+    let mut feature_timeout_expired = false;
+    let mut got_features = false;
+    let mut app_features = false;
+
+    let r = tokio::select! {
         (feat_res, _sleep_res) = &mut barrier => {
             (feat_res, None)
         }
@@ -113,34 +110,58 @@ async fn start_with_ai(
         }
     };
 
-    let schedule = match features_result {
-        Ok(features_result) => {
-            let features = features_result?;
-            ai.schedule(&features, cores)
-                .map_err(|e| logging::error!(e.into()))?
-        }
-        Err(_) => {
-            logging::info!("Feature extraction timed out. Running timeout schedule");
-            timeout_schedule(args, cores)
-                .await
-                .map_err(|e| logging::error!(e.into()))?
-        }
-    };
+    // let feature_timeout_duration =
+    //     Duration::from_secs(args.feature_timeout.max(args.static_runtime)); // if static runtime is higher thatn feature_runtime, we anyways have to wait, so we have more time to extract features
+    // let barrier = async {
+    //     tokio::join!(
+    //         timeout(feature_timeout_duration, get_features(args, cancellation_token.clone())),
+    //         sleep(static_runtime_duration)
+    //     )
+    // };
+    // tokio::pin!(barrier);
 
-    match static_schedule_finished {
-        Some(Ok(())) => {}
-        Some(Err(errors)) => {
-            let error_len = errors.len();
-            handle_schedule_errors(errors);
-            if error_len == initial_schedule.len() {
-                return Err(());
-            }
-        }
-        None => {
-            logging::info!("applying static schedule timed out");
-        }
-    }
-    Ok(schedule)
+    // let scheduler_task = scheduler.apply(initial_schedule.clone(), Some(cancellation_token.clone()));
+    // tokio::pin!(scheduler_task);
+
+    // let (features_result, static_schedule_finished) = tokio::select! {
+    //     (feat_res, _sleep_res) = &mut barrier => {
+    //         (feat_res, None)
+    //     }
+
+    //     sched_res = &mut scheduler_task => {
+    //         let (feat_res, _sleep_res) = barrier.await;
+    //         (feat_res, Some(sched_res))
+    //     }
+    // };
+    todo!();
+    // let schedule = match features_result {
+    //     Ok(features_result) => {
+    //         let features = features_result?;
+    //         ai.schedule(&features, cores)
+    //             .map_err(|e| logging::error!(e.into()))?
+    //     }
+    //     Err(_) => {
+    //         logging::info!("Feature extraction timed out. Running timeout schedule");
+    //         timeout_schedule(args, cores)
+    //             .await
+    //             .map_err(|e| logging::error!(e.into()))?
+    //     }
+    // };
+
+    // match static_schedule_finished {
+    //     Some(Ok(())) => {}
+    //     Some(Err(errors)) => {
+    //         let error_len = errors.len();
+    //         handle_schedule_errors(errors);
+    //         if error_len == initial_schedule.len() {
+    //             return Err(());
+    //         }
+    //     }
+    //     None => {
+    //         logging::info!("applying static schedule timed out");
+    //     }
+    // }
+    // Ok(schedule)
 }
 
 // async fn start_with_ai(
