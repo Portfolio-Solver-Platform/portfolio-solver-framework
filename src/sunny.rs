@@ -98,17 +98,20 @@ async fn start_with_ai(
     let mut feature_timeout_expired = false;
     let mut got_features = false;
     let mut app_features = false;
+    loop {
+        let r = tokio::select! {
+            (feat_res, _sleep_res) = &mut static_runtime_timeout_future => {
+                static_timeout_expired = true;
+                (feat_res, None)
+            }
 
-    let r = tokio::select! {
-        (feat_res, _sleep_res) = &mut barrier => {
-            (feat_res, None)
-        }
+            sched_res = &mut scheduler_task => {
+                let (feat_res, _sleep_res) = barrier.await;
+                (feat_res, Some(sched_res))
+            }
+        };
+    }
 
-        sched_res = &mut scheduler_task => {
-            let (feat_res, _sleep_res) = barrier.await;
-            (feat_res, Some(sched_res))
-        }
-    };
 
     // let feature_timeout_duration =
     //     Duration::from_secs(args.feature_timeout.max(args.static_runtime)); // if static runtime is higher thatn feature_runtime, we anyways have to wait, so we have more time to extract features
