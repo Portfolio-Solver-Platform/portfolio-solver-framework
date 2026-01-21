@@ -49,12 +49,12 @@ jobs:
       with:
         target: ci
         load: true
-        tags: framework:latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        tags: jobork/framework:latest
+        cache-from: type=registry,ref=jobork/framework:buildcache
+        cache-to: type=registry,ref=jobork/framework:buildcache,mode=max
 
     - name: Unit tests
-      run: docker run -t framework:latest cargo test --release --verbose --locked
+      run: docker run -t jobork/framework:latest cargo test --release --verbose --locked
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -70,9 +70,9 @@ jobs:
       with:
         target: ci-integration
         load: true
-        tags: framework:latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        tags: jobork/framework:latest
+        cache-from: type=registry,ref=jobork/framework:buildcache
+        cache-to: type=registry,ref=jobork/framework:buildcache,mode=max
 
     - name: Integration tests
-      run: docker run -t framework:latest cargo test --tests --release --verbose --locked
+      run: docker run -t jobork/framework:latest cargo test --tests --release --verbose --locked
