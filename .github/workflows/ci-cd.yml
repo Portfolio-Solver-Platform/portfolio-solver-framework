@@ -8,6 +8,8 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
+    with:
+      update_image_cache: true
 
   cd:
     needs: ci

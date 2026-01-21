@@ -1,7 +1,7 @@
 name: CD
 
 on:
-  workflow_call
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
