@@ -202,7 +202,7 @@ FROM base AS final
 
 # Install mzn2feat
 # TODO: Move it into its own image (to improve caching)
-RUN git clone https://github.com/CP-Unibo/mzn2feat.git /opt/mzn2feat
+RUN git clone -q https://github.com/CP-Unibo/mzn2feat.git /opt/mzn2feat
 
 RUN cd /opt/mzn2feat && bash install --no-xcsp
 
@@ -216,16 +216,16 @@ RUN wget -q https://picat-lang.org/download/picat394_linux64.tar.gz \
     && ln -s /opt/Picat/picat /usr/local/bin/picat \
     && rm picat394_linux64.tar.gz
 
-RUN git clone https://github.com/nfzhou/fzn_picat.git /opt/fzn_picat
+RUN git clone -q https://github.com/nfzhou/fzn_picat.git /opt/fzn_picat
 
 # Install SCIP from a .deb package. This requires updating apt-get lists
 COPY --from=scip /opt/scip/package.deb ./scip-package.deb
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -qq && apt-get install -qq -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository universe \
-    && apt-get install -y ./scip-package.deb \
+    && apt-get install -qq -y ./scip-package.deb \
     && rm ./scip-package.deb \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean -qq && rm -rf /var/lib/apt/lists/*
 
 # Install solver configurations
 COPY --from=solver-configs /solvers/*.msc /usr/local/share/minizinc/solvers/
