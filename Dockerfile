@@ -198,18 +198,28 @@ COPY --from=dexter /opt/dexter/share/minizinc/solvers/* .
 
 FROM base AS mzn2feat
 
-RUN git clone -q https://github.com/CP-Unibo/mzn2feat.git /opt/mzn2feat \
-    && cd /opt/mzn2feat \
-    && bash install --no-xcsp
+WORKDIR /opt/mzn2feat
+
+ARG MZN2FEAT_COMMIT=3f92db18a88ba73403238e0ca6be4e9367f4773d
+RUN wget -qO source.tar.gz https://github.com/CP-Unibo/mzn2feat/archive/${MZN2FEAT_COMMIT}.tar.gz \
+    && tar -xzf source.tar.gz --strip-components=1 \
+    && rm source.tar.gz
+RUN bash install --no-xcsp
 
 FROM base AS picat
 
-RUN wget -q https://picat-lang.org/download/picat394_linux64.tar.gz \
-    && tar -xzf picat394_linux64.tar.gz -C /opt \
+ARG PICAT_SHA256=938f994ab94c95d308a1abcade0ea04229171304ae2a64ddcea56a49cdd4faa0
+RUN wget -qO picat.tar.gz https://picat-lang.org/download/picat394_linux64.tar.gz \
+    && echo "${PICAT_SHA256}  picat.tar.gz" | sha256sum -c - \
+    && tar -xzf picat.tar.gz -C /opt \
     && ln -s /opt/Picat/picat /usr/local/bin/picat \
-    && rm picat394_linux64.tar.gz
+    && rm picat.tar.gz
 
-RUN git clone -q https://github.com/nfzhou/fzn_picat.git /opt/fzn_picat
+WORKDIR /opt/fzn_picat
+ARG FZN_PICAT_COMMIT=8b6ba4517669bbf856f8b2661b2e8e52d5ad081d
+RUN wget -qO source.tar.gz https://github.com/nfzhou/fzn_picat/archive/${FZN_PICAT_COMMIT}.tar.gz \
+    && tar -xzf source.tar.gz --strip-components=1 \
+    && rm source.tar.gz
 
 FROM base-small AS final
 
