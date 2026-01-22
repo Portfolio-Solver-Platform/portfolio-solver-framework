@@ -10,14 +10,26 @@ WORKDIR /usr/src/app
 COPY Cargo.toml Cargo.lock ./
 # Dummy main file
 RUN mkdir src && echo "fn main() {}" > src/main.rs \
-    && cargo build --release --locked \
+    && cargo build --release --locked --quiet \
     && rm -rf src
 
 # Now copy and build the actual source code
 COPY src ./src
-RUN touch src/main.rs && cargo build --release --locked
+RUN touch src/main.rs && cargo build --release --locked --quiet
 
-FROM minizinc/mznc2025:latest AS base
+FROM minizinc/mznc2025:latest AS base-small
+
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+    ca-certificates \
+    # Java is needed at runtime by Yuck
+    default-jre \
+    # Dynamic library needed by Gecode
+    libegl1 \
+    # Cleanup
+    && apt-get clean -qq \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base-small AS base
 
 WORKDIR /app
 
@@ -27,56 +39,42 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl-dev \
+    curl \
     wget \
-    default-jre \
     unzip \
     git \
-    curl \
     jq \
     cmake \
     flex \
     bison \
-    libxml++2.6-dev \
     build-essential \
-    libgl1 \
-    libglu1-mesa \
-    libegl1 \
-    libfontconfig1 \
-    python3.13 \
     # Install rustup
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.91 \
     # Cleanup
+    && apt-get clean -qq \
     && rm -rf /var/lib/apt/lists/*
-
-COPY command-line-ai/requirements.txt ./requirements.txt
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.13
-RUN python3.13 -m pip install -r ./requirements.txt
 
 FROM base AS huub
 
-RUN git clone --depth 1 --branch pub/CP2025 https://github.com/huub-solver/huub.git /huub
+RUN git clone -q --depth 1 --branch pub/CP2025 https://github.com/huub-solver/huub.git /huub
 WORKDIR /huub
-RUN cargo build --release
+RUN cargo build --release --quiet
 
 
 FROM base AS yuck
 
-RUN wget https://github.com/informarte/yuck/releases/download/20251106/yuck-20251106.zip \
-    && unzip yuck-20251106.zip -d /opt \
+RUN wget -q https://github.com/informarte/yuck/releases/download/20251106/yuck-20251106.zip \
+    && unzip -q yuck-20251106.zip -d /opt \
     && mv /opt/yuck-20251106 /opt/yuck \
     && chmod +x /opt/yuck/bin/yuck \
     && rm yuck-20251106.zip
 
 FROM base AS or-tools
 
-RUN wget https://github.com/google/or-tools/releases/download/v9.14/or-tools_amd64_ubuntu-24.04_cpp_v9.14.6206.tar.gz -O or-tools.tar.gz \
-    && tar -xzvf or-tools.tar.gz \
+RUN wget -q https://github.com/google/or-tools/releases/download/v9.14/or-tools_amd64_ubuntu-24.04_cpp_v9.14.6206.tar.gz -O or-tools.tar.gz \
+    && tar -xzf or-tools.tar.gz \
     && rm or-tools.tar.gz \
     && mv or-tools_x86_64_Ubuntu-24.04_cpp_v9.14.6206 /or-tools \
     && mkdir /opt/or-tools \
@@ -89,9 +87,9 @@ RUN wget https://github.com/google/or-tools/releases/download/v9.14/or-tools_amd
 
 FROM base AS choco
 
-RUN wget https://github.com/chocoteam/choco-solver/archive/refs/tags/v4.10.18.tar.gz -O choco.tar.gz \
-    && wget https://github.com/chocoteam/choco-solver/releases/download/v4.10.18/choco-solver-4.10.18-light.jar -O choco.jar \
-    && tar -xzvf choco.tar.gz \
+RUN wget -q https://github.com/chocoteam/choco-solver/archive/refs/tags/v4.10.18.tar.gz -O choco.tar.gz \
+    && wget -q https://github.com/chocoteam/choco-solver/releases/download/v4.10.18/choco-solver-4.10.18-light.jar -O choco.jar \
+    && tar -xzf choco.tar.gz \
     && rm choco.tar.gz \
     && mv choco-solver-4.10.18 /choco \
     && mkdir -p /opt/choco/bin \
@@ -108,12 +106,12 @@ RUN wget https://github.com/chocoteam/choco-solver/archive/refs/tags/v4.10.18.ta
 FROM base AS pumpkin
 
 # Version 0.2.2
-RUN wget https://github.com/ConSol-Lab/Pumpkin/archive/62b2f09f4b28d0065e4a274d7346f34598b44898.tar.gz -O pumpkin.tar.gz \
-    && tar -xzvf pumpkin.tar.gz \
+RUN wget -q https://github.com/ConSol-Lab/Pumpkin/archive/62b2f09f4b28d0065e4a274d7346f34598b44898.tar.gz -O pumpkin.tar.gz \
+    && tar -xzf pumpkin.tar.gz \
     && rm pumpkin.tar.gz \
     && mv Pumpkin-62b2f09f4b28d0065e4a274d7346f34598b44898 /pumpkin
 WORKDIR /pumpkin
-RUN cargo build --release -p pumpkin-solver
+RUN cargo build --release --quiet -p pumpkin-solver
 # We can't use the .msc file from the repository because it is currently not valid JSON
 COPY ./minizinc/solvers/pumpkin.msc.template /pumpkin.msc.template
 RUN mkdir -p /opt/pumpkin/bin \
@@ -198,34 +196,54 @@ COPY --from=gecode /opt/gecode/share/minizinc/solvers/* .
 COPY --from=chuffed /opt/chuffed/share/minizinc/solvers/* .
 COPY --from=dexter /opt/dexter/share/minizinc/solvers/* .
 
-FROM base AS final
+FROM base AS mzn2feat
 
-# Install mzn2feat
-# TODO: Move it into its own image (to improve caching)
-RUN git clone https://github.com/CP-Unibo/mzn2feat.git /opt/mzn2feat
+WORKDIR /opt/mzn2feat
 
-RUN cd /opt/mzn2feat && bash install --no-xcsp
+ARG MZN2FEAT_COMMIT=3f92db18a88ba73403238e0ca6be4e9367f4773d
+RUN wget -qO source.tar.gz https://github.com/CP-Unibo/mzn2feat/archive/${MZN2FEAT_COMMIT}.tar.gz \
+    && tar -xzf source.tar.gz --strip-components=1 \
+    && rm source.tar.gz
+RUN bash install --no-xcsp
 
-RUN ln -s /opt/mzn2feat/bin/mzn2feat /usr/local/bin/mzn2feat \
-    && ln -s /opt/mzn2feat/bin/fzn2feat /usr/local/bin/fzn2feat
+FROM base AS picat
 
-# Install Picat solver
-# TODO: Move it into its own image (to improve caching)
-RUN wget https://picat-lang.org/download/picat394_linux64.tar.gz \
-    && tar -xzf picat394_linux64.tar.gz -C /opt \
+ARG PICAT_SHA256=938f994ab94c95d308a1abcade0ea04229171304ae2a64ddcea56a49cdd4faa0
+RUN wget -qO picat.tar.gz https://picat-lang.org/download/picat394_linux64.tar.gz \
+    && echo "${PICAT_SHA256}  picat.tar.gz" | sha256sum -c - \
+    && tar -xzf picat.tar.gz -C /opt \
     && ln -s /opt/Picat/picat /usr/local/bin/picat \
-    && rm picat394_linux64.tar.gz
+    && rm picat.tar.gz
 
-RUN git clone https://github.com/nfzhou/fzn_picat.git /opt/fzn_picat
+WORKDIR /opt/fzn_picat
+ARG FZN_PICAT_COMMIT=8b6ba4517669bbf856f8b2661b2e8e52d5ad081d
+RUN wget -qO source.tar.gz https://github.com/nfzhou/fzn_picat/archive/${FZN_PICAT_COMMIT}.tar.gz \
+    && tar -xzf source.tar.gz --strip-components=1 \
+    && rm source.tar.gz
 
-# Install SCIP from a .deb package. This requires updating apt-get lists
-COPY --from=scip /opt/scip/package.deb ./scip-package.deb
-RUN apt-get update && apt-get install -y --no-install-recommends \
+FROM base-small AS final
+
+# Install Python
+RUN apt-get update -qq && apt-get install -qq -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository universe \
-    && apt-get install -y ./scip-package.deb \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get install -qq -y \
+        python3.13 \
+        python3.13-venv \
+    && apt-get clean -qq && rm -rf /var/lib/apt/lists/*
+RUN python3.13 -m ensurepip --upgrade
+
+COPY command-line-ai/requirements.txt ./requirements.txt
+RUN python3.13 -m pip install --quiet -r ./requirements.txt
+
+COPY --from=scip /opt/scip/package.deb ./scip-package.deb
+RUN apt-get update -qq && apt-get install -qq -y ./scip-package.deb \
     && rm ./scip-package.deb \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean -qq && rm -rf /var/lib/apt/lists/*
+
+COPY --from=mzn2feat /opt/mzn2feat/bin/mzn2feat /usr/local/bin/mzn2feat
+COPY --from=mzn2feat /opt/mzn2feat/bin/fzn2feat /usr/local/bin/fzn2feat
 
 # Install solver configurations
 COPY --from=solver-configs /solvers/*.msc /usr/local/share/minizinc/solvers/
@@ -236,6 +254,8 @@ COPY ./solvers/picat/wrapper.sh /usr/local/bin/fzn-picat
 COPY --from=huub /huub/target/release/fzn-huub /usr/local/bin/fzn-huub
 COPY --from=huub /huub/share/minizinc/huub/ /usr/local/share/minizinc/huub/
 
+COPY --from=picat /opt/Picat/picat /usr/local/bin/picat
+COPY --from=picat /opt/fzn_picat/ /opt/fzn_picat/
 COPY --from=yuck /opt/yuck/ /opt/yuck/
 COPY --from=or-tools /opt/or-tools/ /opt/or-tools/
 COPY --from=choco /opt/choco/ /opt/choco/
@@ -248,9 +268,9 @@ COPY ./minizinc/Preferences.json /root/.minizinc/
 COPY --from=builder /usr/src/app/target/release/portfolio-solver-framework /usr/local/bin/portfolio-solver-framework
 COPY command-line-ai ./command-line-ai
 
-# Gecode also uses dynamically linked libraries, so register these with the system
-# Note that Chuffed may be dependent on these same linked libraries, but I'm not sure
-# This is done at the very end to make sure it doesn't mess with other commands
+# Gecode also uses dynamically linked libraries (DLL), so register these with the system.
+# Note that Chuffed may be dependent on these same linked libraries, but I'm not sure.
+# This is done at the very end to make sure it doesn't mess with other commands.
 RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf \
     && ldconfig
 
@@ -267,7 +287,29 @@ RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf \
 
 FROM builder AS ci
 
-FROM final AS ci-integration
+FROM final AS ci-end-to-end
+
+    # Undo Gecode DLL modifications
+RUN rm /etc/ld.so.conf.d/gecode.conf && ldconfig \
+    # Remove Python apt-get repository
+    && rm -f /etc/apt/sources.list.d/deadsnakes* \
+    # Install build tools (because the CI builds the application)
+    && apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+    gcc \
+    libc6-dev \
+    # Cleanup
+    && rm -rf /var/lib/apt/lists/* \
+    # Redo Gecode DLL modifications (because they are needed at runtime)
+    && echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf && ldconfig
+
+# Fix paths for cargo
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
+
+COPY --from=base /usr/local/cargo /usr/local/cargo
+COPY --from=base /usr/local/rustup /usr/local/rustup
 
 COPY Cargo.toml Cargo.lock ./
 COPY ./src ./src
