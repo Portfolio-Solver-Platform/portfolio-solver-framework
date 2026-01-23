@@ -29,9 +29,14 @@ impl Solvers {
                     input_type,
                 }) => {
                     if input_type == "MZN" || input_type == "NL" {
-                        logging::info!(
+                        let msg = format!(
                             "Solver with ID '{solver_id}' has unsupported input type '{input_type}'"
                         );
+                        if solver_id == crate::solvers::SELF_ID {
+                            logging::info!("{msg}");
+                        } else {
+                            logging::warning!("{msg}");
+                        }
                     } else {
                         logging::error!(
                             SolverParseError::UnknownInputType {

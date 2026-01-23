@@ -180,7 +180,7 @@ FROM base AS solver-configs
 
 COPY ./minizinc/solvers/ /solvers/
 WORKDIR /solvers
-RUN jq '.executable[0] = "/usr/local/bin/portfolio-solver-framework"' ./framework.msc.template > ./framework.msc
+RUN jq '.executable[0] = "/usr/local/bin/parasol"' ./parasol.msc.template > ./parasol.msc
 RUN jq '.executable = "/usr/local/bin/fzn-picat"' ./picat.msc.template > picat.msc.temp
 RUN jq '.mznlib = "/opt/fzn_picat/mznlib"' picat.msc.temp > ./picat.msc
 COPY --from=huub /huub/share/minizinc/solvers/huub.msc ./huub.msc.template
@@ -265,7 +265,7 @@ COPY --from=chuffed /opt/chuffed/ /opt/chuffed/
 COPY --from=dexter /opt/dexter/ /opt/dexter/
 
 COPY ./minizinc/Preferences.json /root/.minizinc/
-COPY --from=builder /usr/src/app/target/release/portfolio-solver-framework /usr/local/bin/portfolio-solver-framework
+COPY --from=builder /usr/src/app/target/release/parasol /usr/local/bin/parasol
 COPY command-line-ai ./command-line-ai
 
 # Gecode also uses dynamically linked libraries (DLL), so register these with the system.
@@ -285,7 +285,7 @@ RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf \
 #       2. Uncomment the following line of code:
 # COPY ./xpressmp/ /opt/xpressmp/
 
-RUN portfolio-solver-framework build-solver-cache
+RUN parasol build-solver-cache
 
 FROM builder AS ci
 

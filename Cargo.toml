@@ -1,5 +1,5 @@
 [package]
-name = "portfolio-solver-framework"
+name = "parasol"
 version = "0.1.0"
 edition = "2024"
 

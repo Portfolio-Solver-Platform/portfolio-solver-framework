@@ -1,7 +1,7 @@
 {
-  "name" : "sunny",
+  "name" : "parasol",
   "version": "1.0",
-  "id": "org.psp.sunny",
+  "id": "org.psp.parasol",
   "executable": ["${EXE_PATH}", "run"],
   "tags": ["portfolio"],
   "stdFlags": ["-p", "-f"],

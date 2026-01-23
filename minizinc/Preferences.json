@@ -1,5 +1,5 @@
 {
-    "tagDefaults": [["", "org.psp.sunny"]],
+    "tagDefaults": [["", "org.psp.parasol"]],
     "solverDefaults": [
         ["org.minizinc.mip.cplex","--cplex-dll","/app/libcplex.so"]
     ]

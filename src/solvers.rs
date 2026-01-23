@@ -1,3 +1,6 @@
+/// The ID of this solver
+pub const SELF_ID: &str = "org.psp.parasol";
+
 pub const HUUB_ID: &str = "solutions.huub";
 pub const CP_SAT_ID: &str = "cp-sat";
 pub const COIN_BC_ID: &str = "org.minizinc.mip.coin-bc";
