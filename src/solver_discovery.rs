@@ -245,19 +245,9 @@ enum SolverParseError {
 type SolverParseResult<T> = std::result::Result<T, SolverParseError>;
 
 pub async fn discover(minizinc_exe: &Path) -> Result<Solvers> {
-    let start = Instant::now();
     let output = run_discover_command(minizinc_exe).await?;
-    let duration = start.elapsed();
-    println!("Time elapsed discover: {:?}", duration);
-    let start = Instant::now();
-
     let json = serde_json::from_slice::<Value>(&output)?;
-    let k = Solvers::from_json(json);
-    let duration = start.elapsed();
-
-    println!("Time elapsed json: {:?}", duration);
-
-    k
+    Solvers::from_json(json)
 }
 
 async fn run_discover_command(minizinc_exe: &Path) -> Result<Vec<u8>> {
