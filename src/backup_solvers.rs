@@ -1,4 +1,4 @@
-use crate::args::Args;
+use crate::args::RunArgs;
 use tokio::process::Command;
 
 #[derive(Debug, thiserror::Error)]
@@ -10,7 +10,7 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub async fn run_backup_solver(args: &Args, cores: usize) -> Result<()> {
+pub async fn run_backup_solver(args: &RunArgs, cores: usize) -> Result<()> {
     let mut cmd = Command::new(&args.minizinc_exe);
     cmd.kill_on_drop(true);
     cmd.arg("--solver").arg("cp-sat");

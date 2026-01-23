@@ -4,13 +4,13 @@ use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::args;
-use crate::args::Args;
+use crate::args::RunArgs;
 use crate::logging;
 use super::Conversion;
 use super::compilation;
 
 pub struct CompilationManager {
-    args: Arc<Args>,
+    args: Arc<RunArgs>,
     compilations: RwLock<HashMap<String, Compilation>>,
 }
 

@@ -1,4 +1,4 @@
-use crate::args::Args;
+use crate::args::RunArgs;
 use crate::insert_objective::ObjectiveInserter;
 use crate::model_parser::{ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type};
 use crate::process_tree::{
@@ -79,7 +79,7 @@ impl Drop for SolverProcess {
 pub struct SolverManager {
     tx: mpsc::UnboundedSender<Msg>,
     solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
-    args: Args,
+    args: RunArgs,
     mzn_to_fzn: mzn_to_fzn::cached_compiler::CachedCompiler,
     objective_inserter: ObjectiveInserter,
     best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
@@ -97,7 +97,7 @@ struct PipeCommand {
 
 impl SolverManager {
     pub async fn new(
-        args: Args,
+        args: RunArgs,
         solver_args: HashMap<String, Vec<String>>,
         solver_info: Arc<solver_discovery::Solvers>,
         program_cancellation_token: CancellationToken,

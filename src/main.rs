@@ -20,17 +20,26 @@ use std::process::exit;
 use std::sync::Arc;
 
 use crate::ai::SimpleAi;
-use crate::args::{Ai, parse_ai_config};
+use crate::args::{Ai, Cli, Command, RunArgs, parse_ai_config};
 use crate::backup_solvers::run_backup_solver;
 use crate::config::Config;
 use crate::sunny::sunny;
-use args::Args;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let args = Args::parse();
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::BuildSolverCache => {
+            todo!()
+        }
+        Command::Run(args) => run(args).await,
+    }
+}
+
+async fn run(args: RunArgs) {
     logging::init(args.verbosity);
 
     let solvers = solver_discovery::discover(&args.minizinc_exe)

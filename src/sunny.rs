@@ -6,7 +6,7 @@ use crate::mzn_to_fzn::{self, convert_mzn};
 use crate::scheduler::{Portfolio, Scheduler};
 use crate::static_schedule::{self, static_schedule, timeout_schedule};
 use crate::{ai, logging, solver_discovery, solver_manager};
-use crate::{ai::Ai, args::Args};
+use crate::{ai::Ai, args::RunArgs};
 use tokio::time::{Duration, sleep, timeout};
 use tokio_util::sync::CancellationToken;
 const FEATURES_SOLVER: &str = "gecode";
@@ -32,7 +32,7 @@ pub enum Error {
 }
 
 pub async fn sunny<T: Ai + Send + 'static>(
-    args: &Args,
+    args: &RunArgs,
     ai: Option<T>,
     config: Config,
     solvers: Arc<solver_discovery::Solvers>,
@@ -89,7 +89,7 @@ pub async fn sunny<T: Ai + Send + 'static>(
 }
 
 async fn start_with_ai<T: Ai + Send + 'static>(
-    args: &Args,
+    args: &RunArgs,
     mut ai: T,
     scheduler: &mut Scheduler,
     initial_schedule: Portfolio,
@@ -254,7 +254,7 @@ async fn start_with_ai<T: Ai + Send + 'static>(
 // }
 
 async fn start_without_ai(
-    args: &Args,
+    args: &RunArgs,
     scheduler: &mut Scheduler,
     schedule: Portfolio,
 ) -> Result<Portfolio, Error> {
@@ -288,7 +288,7 @@ async fn start_without_ai(
     Ok(schedule)
 }
 
-fn get_cores(args: &Args, ai: &Option<impl Ai>) -> (usize, usize) {
+fn get_cores(args: &RunArgs, ai: &Option<impl Ai>) -> (usize, usize) {
     let mut cores = args.cores;
 
     let initial_solver_cores = if args.pin_yuck && ai.is_some() {
@@ -303,7 +303,7 @@ fn get_cores(args: &Args, ai: &Option<impl Ai>) -> (usize, usize) {
     (cores, initial_solver_cores)
 }
 
-async fn get_features(args: &Args, token: CancellationToken) -> Result<Vec<f32>, Error> {
+async fn get_features(args: &RunArgs, token: CancellationToken) -> Result<Vec<f32>, Error> {
     let conversion = convert_mzn(args, FEATURES_SOLVER, token.clone()).await?;
 
     tokio::select! {

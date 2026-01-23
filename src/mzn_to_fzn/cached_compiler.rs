@@ -1,20 +1,19 @@
-use crate::args::Args;
+use super::Conversion;
+use super::compilation;
+use super::convert_mzn;
+use crate::args::RunArgs;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use super::Conversion;
-use super::compilation;
-use super::convert_mzn;
 
 pub struct CachedCompiler {
-    args: Args,
+    args: RunArgs,
     cache: RwLock<HashMap<String, Arc<Conversion>>>,
 }
 
-
 impl CachedCompiler {
-    pub fn new(args: Args) -> Self {
+    pub fn new(args: RunArgs) -> Self {
         Self {
             args,
             cache: RwLock::new(HashMap::new()),

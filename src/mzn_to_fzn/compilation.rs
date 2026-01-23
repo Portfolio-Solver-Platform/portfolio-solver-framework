@@ -1,4 +1,4 @@
-use crate::args::Args;
+use crate::args::RunArgs;
 use crate::logging;
 use std::path::Path;
 use std::process::Stdio;
@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use super::Conversion;
 
 pub async fn convert_mzn(
-    args: &Args,
+    args: &RunArgs,
     solver_name: &str,
     cancellation_token: CancellationToken,
 ) -> Result<Conversion> {
@@ -34,7 +34,7 @@ pub async fn convert_mzn(
 }
 
 async fn run_mzn_to_fzn_cmd(
-    args: &Args,
+    args: &RunArgs,
     solver_name: &str,
     fzn_result_path: &Path,
     ozn_result_path: &Path,
@@ -74,7 +74,7 @@ async fn run_mzn_to_fzn_cmd(
 }
 
 fn get_mzn_to_fzn_cmd(
-    args: &Args,
+    args: &RunArgs,
     solver_name: &str,
     fzn_result_path: &Path,
     ozn_result_path: &Path,

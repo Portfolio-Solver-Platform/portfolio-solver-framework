@@ -5,7 +5,21 @@ use crate::logging;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about)]
-pub struct Args {
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum Command {
+    /// Run the solver framework
+    Run(RunArgs),
+    /// Build the solver config cache and exit
+    BuildSolverCache,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct RunArgs {
     // === Input Files ===
     /// The MiniZinc model file
     pub model: PathBuf,
@@ -98,6 +112,10 @@ pub struct Args {
         help_heading = "Debugging"
     )]
     pub verbosity: Verbosity,
+
+    /// Whether to discover solvers at startup or load from a pre-generated cache. Loading from cache is faster.
+    #[arg(long, default_value = "discover", help_heading = "Debugging")]
+    pub solver_config_mode: SolverConfigMode,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -129,6 +147,14 @@ pub enum Verbosity {
     Error = 1,
     Warning = 2,
     Info = 3,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum SolverConfigMode {
+    /// Use the cached solver configs (The cache must be generated beforehand)
+    Cache,
+    /// Run automatic solver discovery to find solver configs.
+    Discover,
 }
 
 pub fn parse_ai_config(config: Option<&str>) -> HashMap<String, String> {

@@ -1,5 +1,5 @@
 use crate::{
-    args::{Args, Verbosity},
+    args::{RunArgs, Verbosity},
     config::Config,
     logging,
     model_parser::ObjectiveValue,
@@ -98,7 +98,7 @@ fn is_over_threshold(used: f64, total: f64, threshold: f64) -> bool {
 
 impl Scheduler {
     pub async fn new(
-        args: &Args,
+        args: &RunArgs,
         config: &Config,
         solver_info: Arc<solver_discovery::Solvers>,
         program_cancellation_token: CancellationToken,
