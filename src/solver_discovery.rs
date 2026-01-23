@@ -33,7 +33,7 @@ pub enum SolverInputType {
 }
 
 #[derive(Debug, Clone)]
-pub struct Executable(PathBuf);
+pub struct Executable(PathBuf, Vec<String>);
 
 #[derive(Debug, Clone)]
 pub struct Solvers(Vec<Solver>);
@@ -153,15 +153,39 @@ impl Solver {
     ) -> Option<SolverParseResult<Executable>> {
         const FIELD_NAME: &str = "executable";
 
-        Self::field_from_json(FIELD_NAME, object).ok().map(|json| {
-            let Value::String(s) = json else {
-                return Err(SolverParseError::FieldNotAString(
+        Self::field_from_json(FIELD_NAME, object)
+            .ok()
+            .map(|json| match json {
+                Value::String(s) => Ok(Executable(s.into(), Vec::new())),
+                Value::Array(values) => Self::executable_from_array(values),
+                _ => Err(SolverParseError::FieldNotAString(
                     FIELD_NAME.to_string(),
                     json,
-                ));
-            };
-            Ok(Executable(s.into()))
-        })
+                )),
+            })
+    }
+
+    fn executable_from_array(array: Vec<Value>) -> SolverParseResult<Executable> {
+        let mut values = array
+            .into_iter()
+            .map(|value| {
+                if let Value::String(s) = value {
+                    Ok(s)
+                } else {
+                    Err(SolverParseError::ExecutableNonStringArrayElement(
+                        value.clone(),
+                    ))
+                }
+            })
+            .collect::<SolverParseResult<Vec<_>>>()?
+            .into_iter();
+
+        let first = values
+            .next()
+            .ok_or_else(|| SolverParseError::ExecutableArrayEmpty)?;
+
+        let rest = values.collect::<Vec<_>>();
+        Ok(Executable(first.into(), rest))
     }
 
     fn input_type_from_json(
@@ -238,6 +262,12 @@ enum SolverParseError {
         solver_id: String,
         input_type: String,
     },
+
+    #[error("Solver's field 'executable' is an array but an element was not a string: {0}")]
+    ExecutableNonStringArrayElement(Value),
+
+    #[error("Solver's field 'executable' is an empty array")]
+    ExecutableArrayEmpty,
 
     #[error("A std flag is not a string: {0}")]
     StdFlagNotAString(Value),

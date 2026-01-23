@@ -2,7 +2,7 @@
   "name" : "sunny",
   "version": "1.0",
   "id": "org.psp.sunny",
-  "executable": "${EXE_PATH}",
+  "executable": ["${EXE_PATH}", "run"],
   "tags": ["portfolio"],
   "stdFlags": ["-p", "-f"],
   "extraFlags": [

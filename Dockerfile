@@ -180,7 +180,7 @@ FROM base AS solver-configs
 
 COPY ./minizinc/solvers/ /solvers/
 WORKDIR /solvers
-RUN jq '.executable = "/usr/local/bin/portfolio-solver-framework"' ./framework.msc.template > ./framework.msc
+RUN jq '.executable[0] = "/usr/local/bin/portfolio-solver-framework"' ./framework.msc.template > ./framework.msc
 RUN jq '.executable = "/usr/local/bin/fzn-picat"' ./picat.msc.template > picat.msc.temp
 RUN jq '.mznlib = "/opt/fzn_picat/mznlib"' picat.msc.temp > ./picat.msc
 COPY --from=huub /huub/share/minizinc/solvers/huub.msc ./huub.msc.template
