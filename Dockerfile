@@ -285,6 +285,8 @@ RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf \
 #       2. Uncomment the following line of code:
 # COPY ./xpressmp/ /opt/xpressmp/
 
+RUN portfolio-solver-framework build-solver-cache
+
 FROM builder AS ci
 
 FROM final AS ci-end-to-end
