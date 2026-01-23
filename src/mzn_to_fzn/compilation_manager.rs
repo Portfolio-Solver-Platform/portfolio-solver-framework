@@ -1,5 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
+use futures::FutureExt;
+use futures::future;
+use tokio::sync::watch;
+use tokio::sync::watch::Receiver;
+use tokio::task::JoinError;
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -8,21 +13,24 @@ use super::compilation;
 use crate::args;
 use crate::args::RunArgs;
 use crate::logging;
+use crate::mzn_to_fzn::ConversionError;
 
 pub struct CompilationManager {
     args: Arc<RunArgs>,
-    compilations: RwLock<HashMap<String, Compilation>>,
+    compilations: Arc<RwLock<HashMap<String, Compilation>>>,
 }
 
+#[derive(Clone, Debug)]
 enum Compilation {
-    Done(Arc<Conversion>),
-    Started(StartedCompilation),
+    Done(Arc<compilation::Result<Conversion>>),
+    Started(Arc<StartedCompilation>),
 }
 
-struct StartedCompilation(
-    CancellationToken,
-    JoinHandle<compilation::Result<Conversion>>,
-);
+#[derive(Debug)]
+struct StartedCompilation {
+    cancellation_token: CancellationToken,
+    receiver: Receiver<Option<Arc<compilation::Result<Conversion>>>>,
+}
 
 impl CompilationManager {
     pub async fn is_started(&self, solver_name: &str) -> bool {
@@ -50,18 +58,42 @@ impl CompilationManager {
             let args = self.args.clone();
             let cancellation_token_clone = cancellation_token.clone();
             let name_clone = solver_name.clone();
-            let compilation = tokio::spawn(async move {
-                compilation::convert_mzn(&args, &solver_name, cancellation_token_clone).await
+
+            let is_done_token = CancellationToken::new();
+            let is_done_token_clone = is_done_token.clone();
+
+            let compilations = self.compilations.clone();
+
+            let (tx, rx) = watch::channel(None);
+
+            tokio::spawn(async move {
+                let compilation =
+                    compilation::convert_mzn(&args, &solver_name, cancellation_token_clone).await;
+
+                let compilation = Arc::new(compilation);
+
+                {
+                    compilations
+                        .write()
+                        .await
+                        .insert(solver_name, Compilation::Done(compilation.clone()));
+                }
+
+                let _ = tx.send(Some(compilation));
             });
+
             (
                 name_clone,
-                StartedCompilation(cancellation_token, compilation),
+                StartedCompilation {
+                    cancellation_token,
+                    receiver: rx,
+                },
             )
         });
 
         let mut compilations = self.compilations.write().await;
         for (name, compilation) in new_compilations {
-            compilations.insert(name, compilation.into());
+            compilations.insert(name, Compilation::Started(Arc::new(compilation)));
         }
     }
 
@@ -69,8 +101,38 @@ impl CompilationManager {
         &self,
         solver_name: &str,
         cancellation_token: Option<CancellationToken>,
-    ) -> compilation::Result<Conversion> {
-        todo!()
+    ) -> Option<Arc<compilation::Result<Conversion>>> {
+        let compilation = {
+            let compilations = self.compilations.read().await;
+            compilations.get(solver_name).cloned()
+        };
+
+        let Some(compilation) = compilation else {
+            logging::info!(
+                "Attempted to get the compilation of solver '{solver_name}' when it has not been started"
+            );
+            return None;
+        };
+
+        match compilation {
+            Compilation::Done(result) => Some(result),
+            Compilation::Started(compilation) => {
+                let mut rx = compilation.receiver.clone();
+                let result = rx.wait_for(|value| value.is_some()).await;
+
+                let Ok(value) = result else {
+                    logging::error_msg!("sender closed the channel before finishing compilation");
+                    return None;
+                };
+
+                let Some(compilation) = value.clone() else {
+                    logging::error_msg!("value is None despite waiting for it to be Some");
+                    return None;
+                };
+
+                Some(compilation)
+            }
+        }
     }
 
     pub async fn stop_all(&self) {
@@ -78,13 +140,15 @@ impl CompilationManager {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("compilation was cancelled")]
+    Cancelled,
+    #[error(transparent)]
+    Conversion(#[from] ConversionError),
+}
+
 pub enum Cancellable<T> {
     Done(T),
     Cancelled,
-}
-
-impl From<StartedCompilation> for Compilation {
-    fn from(value: StartedCompilation) -> Self {
-        Self::Started(value)
-    }
 }

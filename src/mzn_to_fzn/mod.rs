@@ -8,6 +8,7 @@ use std::path::Path;
 
 use tempfile::NamedTempFile;
 
+#[derive(Debug)]
 pub struct Conversion {
     fzn_file: NamedTempFile,
     ozn_file: NamedTempFile,
