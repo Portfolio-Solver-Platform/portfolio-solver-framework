@@ -1,11 +1,9 @@
+use std::collections::hash_map::Entry;
 use std::{collections::HashMap, sync::Arc};
 
-use futures::FutureExt;
-use futures::future;
+use tokio::sync::RwLock;
 use tokio::sync::watch;
 use tokio::sync::watch::Receiver;
-use tokio::task::JoinError;
-use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use super::Conversion;
@@ -13,7 +11,6 @@ use super::compilation;
 use crate::args;
 use crate::args::RunArgs;
 use crate::logging;
-use crate::mzn_to_fzn::ConversionError;
 
 pub struct CompilationManager {
     args: Arc<RunArgs>,
@@ -58,9 +55,6 @@ impl CompilationManager {
             let args = self.args.clone();
             let cancellation_token_clone = cancellation_token.clone();
             let name_clone = solver_name.clone();
-
-            let is_done_token = CancellationToken::new();
-            let is_done_token_clone = is_done_token.clone();
 
             let compilations = self.compilations.clone();
 
@@ -121,7 +115,9 @@ impl CompilationManager {
                 let result = rx.wait_for(|value| value.is_some()).await;
 
                 let Ok(value) = result else {
-                    logging::error_msg!("sender closed the channel before finishing compilation");
+                    logging::error_msg!(
+                        "sender closed the channel for '{solver_name}' before finishing compilation"
+                    );
                     return None;
                 };
 
@@ -135,20 +131,26 @@ impl CompilationManager {
         }
     }
 
-    pub async fn stop_all(&self) {
-        todo!()
+    pub async fn stop_all(&self, solver_names: impl Iterator<Item = String>) {
+        let mut compilations = self.compilations.write().await;
+
+        for solver_name in solver_names {
+            if let Entry::Occupied(compilation) = compilations.entry(solver_name) {
+                match compilation.get() {
+                    Compilation::Started(started_compilation) => {
+                        started_compilation.cancellation_token.cancel();
+                        let (solver_name, _) = compilation.remove_entry();
+                        logging::info!("stopped the compilation for solver '{solver_name}'");
+                    }
+                    Compilation::Done(_) => {
+                        logging::info!("attempted to stop a finished compilation for a solver");
+                    }
+                }
+            } else {
+                logging::error_msg!(
+                    "attempted to stop the compilation for a solver but a compilation is not registered for that solver (neither as started or finished)"
+                );
+            }
+        }
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("compilation was cancelled")]
-    Cancelled,
-    #[error(transparent)]
-    Conversion(#[from] ConversionError),
-}
-
-pub enum Cancellable<T> {
-    Done(T),
-    Cancelled,
 }
