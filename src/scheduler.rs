@@ -120,7 +120,11 @@ impl Scheduler {
         tokio::spawn(async move {
             while let Some(event) = signal_rx.recv().await {
                 let result = match event {
-                    SignalEvent::Suspend => solver_manager_clone.suspend_all_solvers().await,
+                    SignalEvent::Suspend => {
+                        let res = solver_manager_clone.suspend_all_solvers().await;
+                        nix::sys::signal::raise(nix::sys::signal::Signal::SIGSTOP).ok();
+                        res
+                    }
                     SignalEvent::Resume => solver_manager_clone.resume_all_solvers().await,
                 };
                 if let Err(e) = result {
