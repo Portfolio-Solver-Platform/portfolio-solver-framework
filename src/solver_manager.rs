@@ -715,10 +715,7 @@ async fn pin_yuck_solver_to_cores(
     }
 
     if let Err(e) = sched_setaffinity(unistd::Pid::from_raw(pid as i32), &cpu_set) {
-        eprintln!(
-            "Warning: Failed to set affinity (process might have exited): {}",
-            e
-        );
+        logging::warning!("Failed to set affinity (process might have exited): {e}");
     }
 
     Ok(allocated_cores)
