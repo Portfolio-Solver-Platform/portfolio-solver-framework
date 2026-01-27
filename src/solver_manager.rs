@@ -16,6 +16,7 @@ use nix::sys::signal::Signal;
 #[cfg(target_os = "linux")]
 use nix::unistd;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -159,15 +160,20 @@ impl SolverManager {
                             *guard = Some(o);
                         }
                         println!("{}", s.trim_end());
+                        let _ = std::io::stdout().flush();
                     }
                 }
                 Msg::Solution(Solution {
                     solution: s,
                     objective: None, // is satisfaction problem
-                }) => println!("{}", s.trim_end()),
+                }) => {
+                    println!("{}", s.trim_end());
+                    let _ = std::io::stdout().flush();
+                }
                 Msg::Status(status) => {
                     if status != Status::Unknown {
                         println!("{}", status.to_dzn_string());
+                        let _ = std::io::stdout().flush();
                         program_cancellation_token.cancel();
                         break;
                     }
