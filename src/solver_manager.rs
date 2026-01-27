@@ -1,6 +1,8 @@
 use crate::args::RunArgs;
 use crate::insert_objective::ObjectiveInserter;
+use crate::is_cancelled::IsCancelled;
 use crate::model_parser::{ModelParseError, ObjectiveType, ObjectiveValue, get_objective_type};
+use crate::mzn_to_fzn::compilation_manager::{self, CompilationManager};
 use crate::process_tree::{
     get_process_tree_memory, recursive_force_kill, send_signals_to_process_tree,
 };
@@ -29,6 +31,8 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("waited for a failed compilation")]
+    WaitForCompilation(#[from] compilation_manager::WaitForError),
     #[error("invalid solver: {0}")]
     InvalidSolver(String),
     #[error("IO error")]
@@ -81,7 +85,7 @@ pub struct SolverManager {
     tx: mpsc::UnboundedSender<Msg>,
     solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
     args: RunArgs,
-    mzn_to_fzn: mzn_to_fzn::cached_compiler::CachedCompiler,
+    mzn_to_fzn: Arc<CompilationManager>,
     objective_inserter: ObjectiveInserter,
     best_objective: Arc<RwLock<Option<ObjectiveValue>>>,
     solver_info: Arc<solver_config::Solvers>,
@@ -101,6 +105,7 @@ impl SolverManager {
         args: RunArgs,
         solver_args: HashMap<String, Vec<String>>,
         solver_info: Arc<solver_config::Solvers>,
+        compilation_manager: Arc<CompilationManager>,
         program_cancellation_token: CancellationToken,
     ) -> std::result::Result<Self, Error> {
         let objective_type = get_objective_type(&args.minizinc.minizinc_exe, &args.model).await?;
@@ -134,7 +139,7 @@ impl SolverManager {
             tx,
             solvers,
             solver_info: solver_info.clone(),
-            mzn_to_fzn: mzn_to_fzn::cached_compiler::CachedCompiler::new(args.clone()),
+            mzn_to_fzn: compilation_manager,
             args,
             best_objective,
             objective_inserter: ObjectiveInserter::new(solver_info),
@@ -251,9 +256,10 @@ impl SolverManager {
     ) -> Result<()> {
         let solver_name = &elem.info.name;
         let cores = elem.info.cores;
+        self.mzn_to_fzn.start(solver_name.clone()).await;
         let conversion_paths = self
             .mzn_to_fzn
-            .compile(solver_name, cancellation_token.clone())
+            .wait_for(solver_name, cancellation_token.clone())
             .await?;
         let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
             if let Ok(new_temp_file) = self

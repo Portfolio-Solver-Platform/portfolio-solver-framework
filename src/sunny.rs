@@ -41,19 +41,20 @@ pub async fn sunny<T: Ai + Send + 'static>(
     program_cancellation_token: CancellationToken,
     suspend_and_resume_signal_rx: tokio::sync::mpsc::UnboundedReceiver<SignalEvent>,
 ) -> Result<(), Error> {
-    let compilation_manager =
-        CompilationManager::new(Arc::new(args.clone()), program_cancellation_token.clone());
+    let compilation_manager = Arc::new(CompilationManager::new(Arc::new(args.clone()), program_cancellation_token.clone()));
 
     let mut scheduler = Scheduler::new(
         args,
         &config,
         solvers,
+        compilation_manager.clone(),
         program_cancellation_token.clone(),
         suspend_and_resume_signal_rx,
     )
     .await?;
 
     let (cores, initial_solver_cores) = get_cores(args, &ai);
+    // let solver_priority_order = get_priority_schedule()
 
     let initial_schedule = static_schedule(args, initial_solver_cores).await?;
 
@@ -69,6 +70,7 @@ pub async fn sunny<T: Ai + Send + 'static>(
             initial_schedule,
             cores,
             start_cancellation_token,
+            compilation_manager
         )
         .await
     } else {
@@ -107,6 +109,7 @@ async fn start_with_ai<T: Ai + Send + 'static>(
     initial_schedule: Portfolio,
     cores: usize,
     cancellation_token: CancellationToken,
+    compilation_manager: Arc<CompilationManager>,
 ) -> Result<Portfolio, Error> {
     // Static schedule, compilation only
     // Feature extraction
@@ -146,6 +149,12 @@ async fn start_with_ai<T: Ai + Send + 'static>(
     //     };
     // }
 
+
+
+    // let solvers_to_compiler: Vec<String> = initial_schedule.iter().map(|solver_info| solver_info.name.clone()).collect();
+    
+    // let compile = compilation_manager.start_many(solver_names);
+
     let feature_timeout_duration =
         Duration::from_secs(args.feature_timeout.max(args.static_runtime)); // if static runtime is higher thatn feature_runtime, we anyways have to wait, so we have more time to extract features
     let barrier = async {
@@ -158,6 +167,7 @@ async fn start_with_ai<T: Ai + Send + 'static>(
         )
     };
     tokio::pin!(barrier);
+
 
     let scheduler_task = scheduler.apply(initial_schedule.clone(), cancellation_token.clone());
     tokio::pin!(scheduler_task);

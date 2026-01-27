@@ -9,9 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::Conversion;
 use super::compilation;
-use crate::args;
 use crate::args::RunArgs;
-use crate::is_cancelled::IsCancelled;
+use crate::is_cancelled::{IsCancelled, IsErrorCancelled};
 use crate::logging;
 
 pub struct CompilationManager {
@@ -26,14 +25,14 @@ pub struct CompilationManager {
 
 #[derive(Clone, Debug)]
 enum Compilation {
-    Done(Arc<Result<Conversion>>),
+    Done(WaitForResult),
     Started(Arc<StartedCompilation>),
 }
 
 #[derive(Debug)]
 struct StartedCompilation {
     cancellation_token: CancellationToken,
-    receiver: Receiver<Option<Arc<Result<Conversion>>>>,
+    receiver: Receiver<Option<WaitForResult>>,
 }
 
 impl CompilationManager {
@@ -75,13 +74,17 @@ impl CompilationManager {
             let (tx, rx) = watch::channel(None);
 
             tokio::spawn(async move {
-                let compilation = Arc::new(
+                let compilation = 
                     compilation::convert_mzn(&args, &solver_name, cancellation_token_clone)
                         .await
-                        .map_err(Error::from),
-                );
+                        .map_err(|e|{
+                            let error = WaitForError::from(&e);
+                            logging::error!(e.into());
+                            error
+                        })
+                        .map(Arc::new);
 
-                if !compilation.is_cancelled() {
+                if !compilation.is_error_cancelled() {
                     compilations
                         .write()
                         .await
@@ -113,7 +116,7 @@ impl CompilationManager {
         &self,
         solver_name: &str,
         cancellation_token: CancellationToken,
-    ) -> Arc<Result<Conversion>> {
+    ) -> WaitForResult {
         let compilation = {
             tokio::select! {
                 compilations = self.compilations.read() => {
@@ -126,11 +129,11 @@ impl CompilationManager {
         };
 
         let Cancellable::Done(compilation) = compilation else {
-            return Arc::new(Err(Error::Cancelled));
+            return Err(WaitForError::Cancelled);
         };
 
         let Some(compilation) = compilation else {
-            return Arc::new(Err(Error::NotStarted(solver_name.to_string())));
+            return Err(WaitForError::NotStarted(solver_name.to_string()));
         };
 
         match compilation {
@@ -144,17 +147,17 @@ impl CompilationManager {
                 };
 
                 let Cancellable::Done(result) = result else {
-                    return Arc::new(Err(Error::Cancelled));
+                    return Err(WaitForError::Cancelled);
                 };
 
                 let Ok(value) = result else {
-                    return Arc::new(Err(Error::ReadChannelClosed(solver_name.to_string())));
+                    return Err(WaitForError::ReadChannelClosed(solver_name.to_string()));
                 };
 
                 let Some(compilation) = value.clone() else {
-                    return Arc::new(Err(Error::CompilationUnfinishedAfterWaiting(
+                    return Err(WaitForError::CompilationUnfinishedAfterWaiting(
                         solver_name.to_string(),
-                    )));
+                    ));
                 };
 
                 compilation
@@ -188,6 +191,14 @@ impl CompilationManager {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("failed to send to the channel for solver '{0}'")]
+    SendError(String, #[source] SendError<Option<WaitForResult>>),
+    #[error(transparent)]
+    Compilation(#[from] compilation::Error),
+}
+
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum WaitForError {
     #[error("compilation was cancelled")]
     Cancelled,
     #[error(
@@ -196,34 +207,33 @@ pub enum Error {
     NotStarted(String),
     #[error("the channel closed for the compilation for '{0}' while waiting for the result")]
     ReadChannelClosed(String),
-    #[error("failed to send to the channel for solver '{0}'")]
-    SendError(String, #[source] SendError<Option<Arc<Result<Conversion>>>>),
     #[error("the compilation of solver '{0}' was still unfinished after waiting for it to be done")]
     CompilationUnfinishedAfterWaiting(String),
-    #[error(transparent)]
-    Compilation(#[from] compilation::Error),
+    #[error("waited for a failed compilation")]
+    Conversion
 }
-pub type Result<T> = std::result::Result<T, Error>;
+pub type WaitForResult = std::result::Result<Arc<Conversion>, WaitForError>;
 
 enum Cancellable<T> {
     Done(T),
     Cancelled,
 }
 
-impl IsCancelled for Error {
+impl IsCancelled for WaitForError {
     fn is_cancelled(&self) -> bool {
         match self {
-            Error::Cancelled => true,
+            Self::Cancelled => true,
             _ => false,
         }
     }
 }
 
-impl<T> IsCancelled for Result<T> {
-    fn is_cancelled(&self) -> bool {
-        match self {
-            Ok(_) => false,
-            Err(e) => e.is_cancelled(),
+impl From<&compilation::Error> for WaitForError {
+    fn from(value: &compilation::Error) -> Self {
+        match value {
+            super::Error::Cancelled => Self::Cancelled,
+            super::Error::Conversion(_) => Self::Conversion,
         }
     }
 }
+

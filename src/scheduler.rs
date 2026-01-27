@@ -1,11 +1,5 @@
 use crate::{
-    args::{RunArgs, Verbosity},
-    config::Config,
-    logging,
-    model_parser::ObjectiveValue,
-    signal_handler::{SignalEvent, spawn_signal_handler},
-    solver_config,
-    solver_manager::{self, Error, SolverManager},
+    args::{RunArgs, Verbosity}, config::Config, logging, model_parser::ObjectiveValue, mzn_to_fzn::compilation_manager::CompilationManager, signal_handler::{SignalEvent, spawn_signal_handler}, solver_config, solver_manager::{self, Error, SolverManager}
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -82,6 +76,7 @@ pub struct Scheduler {
     state: Arc<Mutex<MemoryEnforcerState>>,
     pub solver_manager: Arc<SolverManager>,
     scheduler_cancellation_token: CancellationToken,
+    compilation_manager: Arc<CompilationManager>,
 }
 
 impl Drop for Scheduler {
@@ -99,6 +94,7 @@ impl Scheduler {
         args: &RunArgs,
         config: &Config,
         solver_info: Arc<solver_config::Solvers>,
+        compilation_manager: Arc<CompilationManager>,
         program_cancellation_token: CancellationToken,
         mut suspend_and_resume_signal_rx: tokio::sync::mpsc::UnboundedReceiver<SignalEvent>,
     ) -> std::result::Result<Self, Error> {
@@ -108,7 +104,8 @@ impl Scheduler {
                 args.clone(),
                 config.solver_args.clone(),
                 solver_info,
-                program_cancellation_token,
+                compilation_manager.clone(),
+                program_cancellation_token.clone(),
             )
             .await?,
         );
@@ -164,6 +161,7 @@ impl Scheduler {
             state,
             solver_manager,
             scheduler_cancellation_token,
+            compilation_manager,
         })
     }
 

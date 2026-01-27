@@ -27,6 +27,14 @@ pub struct RunArgs {
     /// The MiniZinc data file corresponding to the model file
     pub data: Option<PathBuf>,
 
+    /// The MiniZinc data file corresponding to the model file
+    #[arg(
+        long,
+        default_value = "None",
+        help_heading = "Input Files"
+    )]
+    pub solver_compiler_priority: Option<PathBuf>,
+
     // === AI Configuration ===
     /// The AI used to determine the solver schedule dynamically
     #[arg(
