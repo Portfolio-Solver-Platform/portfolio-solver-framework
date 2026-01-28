@@ -31,6 +31,8 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("the solver was cancelled")]
+    IsCancelled,
     #[error("waited for a failed compilation")]
     WaitForCompilation(#[from] compilation_manager::WaitForError),
     #[error("invalid solver: {0}")]
@@ -251,15 +253,19 @@ impl SolverManager {
         cmd
     }
 
-    async fn start_solver(&self, elem: &ScheduleElement, objective: Option<ObjectiveValue>) -> Result<()> {
-        let cancellation_token = self.cancellation_token.clone();
+    async fn start_solver(
+        &self,
+        elem: &ScheduleElement,
+        objective: Option<ObjectiveValue>,
+        cancellation_token: CancellationToken,
+    ) -> Result<()> {
         let solver_name = &elem.info.name;
         let cores = elem.info.cores;
         self.mzn_to_fzn.start(solver_name.clone()).await;
-        let conversion_paths = self
-            .mzn_to_fzn
-            .wait_for(solver_name, cancellation_token.clone())
-            .await?;
+        let conversion_paths = cancellation_token
+            .run_until_cancelled(self.mzn_to_fzn.wait_for(solver_name))
+            .await
+            .ok_or(Error::IsCancelled)??;
         let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
             if let Ok(new_temp_file) = self
                 .objective_inserter
@@ -477,10 +483,11 @@ impl SolverManager {
         &self,
         schedule: &[ScheduleElement],
         objective: Option<ObjectiveValue>,
+        cancellation_token: CancellationToken,
     ) -> std::result::Result<(), Vec<Error>> {
         let futures = schedule
             .iter()
-            .map(|elem| self.start_solver(elem, objective));
+            .map(|elem| self.start_solver(elem, objective, cancellation_token.clone()));
         let results = join_all(futures).await;
         let errors: Vec<Error> = results.into_iter().filter_map(Result::err).collect();
 

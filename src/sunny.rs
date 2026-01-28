@@ -77,13 +77,7 @@ pub async fn sunny<T: Ai + Send + 'static>(
         )
         .await
     } else {
-        start_without_ai(
-            args,
-            &mut scheduler,
-            initial_schedule,
-            program_cancellation_token.clone(),
-        )
-        .await
+        start_without_ai(args, &mut scheduler, initial_schedule).await
     }?;
 
     let restart_interval = Duration::from_secs(args.restart_interval);
@@ -97,7 +91,11 @@ pub async fn sunny<T: Ai + Send + 'static>(
         }
 
         let schedule_len = schedule.len();
-        if let Err(errors) = scheduler.apply(schedule.clone()).await
+
+        let apply_cancellation_token = scheduler.create_apply_token();
+        if let Err(errors) = scheduler
+            .apply(schedule.clone(), apply_cancellation_token)
+            .await
         {
             let errorlen = errors.len();
             handle_schedule_errors(errors);
@@ -172,12 +170,14 @@ async fn start_with_ai<T: Ai + Send + 'static>(
         )
     };
     tokio::pin!(barrier);
-
-    let scheduler_task = scheduler.apply(initial_schedule.clone());
+    let apply_cancellation_token = scheduler.create_apply_token();
+    let scheduler_task =
+        scheduler.apply(initial_schedule.clone(), apply_cancellation_token.clone());
     tokio::pin!(scheduler_task);
 
     let (features_result, static_schedule_finished) = tokio::select! {
         (feat_res, _sleep_res) = &mut barrier => {
+            apply_cancellation_token.cancel();
             (feat_res, None)
         }
 
@@ -283,11 +283,11 @@ async fn start_without_ai(
     args: &RunArgs,
     scheduler: &mut Scheduler,
     schedule: Portfolio,
-    cancellation_token: CancellationToken,
 ) -> Result<Portfolio, Error> {
     let static_runtime = Duration::from_secs(args.static_runtime);
 
-    let fut = scheduler.apply(schedule.clone());
+    let apply_cancellation_token = scheduler.create_apply_token();
+    let fut = scheduler.apply(schedule.clone(), apply_cancellation_token.clone());
     tokio::pin!(fut);
 
     let apply_result = tokio::select! {
@@ -295,7 +295,7 @@ async fn start_without_ai(
             result
         }
         _ = sleep(static_runtime) => {
-            cancellation_token.cancel();
+            apply_cancellation_token.cancel();
             logging::info!("applying static schedule timed out");
             fut.await
         }

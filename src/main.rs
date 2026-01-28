@@ -32,10 +32,6 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let program_cancellation_token = CancellationToken::new();
-
-    let suspend_and_resume_signal_rx: tokio::sync::mpsc::UnboundedReceiver<SignalEvent> =
-        spawn_signal_handler(program_cancellation_token.clone());
     let cli = Cli::parse();
 
     match cli.command {
@@ -48,22 +44,15 @@ async fn main() {
                 exit(1);
             }
         }
-        Command::Run(args) => {
-            run(
-                args,
-                program_cancellation_token,
-                suspend_and_resume_signal_rx,
-            )
-            .await
-        }
+        Command::Run(args) => run(args).await,
     }
 }
 
-async fn run(
-    args: RunArgs,
-    program_cancellation_token: CancellationToken,
-    suspend_and_resume_signal_rx: tokio::sync::mpsc::UnboundedReceiver<SignalEvent>,
-) {
+async fn run(args: RunArgs) {
+    let program_cancellation_token = CancellationToken::new();
+    let suspend_and_resume_signal_rx: tokio::sync::mpsc::UnboundedReceiver<SignalEvent> =
+        spawn_signal_handler(program_cancellation_token.clone());
+
     logging::init(args.verbosity);
 
     let solvers = solver_config::load(&args.solver_config_mode, &args.minizinc.minizinc_exe).await;

@@ -180,6 +180,10 @@ impl Scheduler {
         })
     }
 
+    pub fn create_apply_token(&self) -> CancellationToken {
+        self.scheduler_cancellation_token.child_token()
+    }
+
     fn get_memory_usage(state: &mut MemoryEnforcerState) -> (f64, f64) {
         state
             .system
@@ -377,7 +381,17 @@ impl Scheduler {
         }
     }
 
-    pub async fn apply(&mut self, portfolio: Portfolio) -> std::result::Result<(), Vec<Error>> {
+    /// precondition: the apply_cancellation_token should be from self.create_apply_token()
+    pub async fn apply(
+        &mut self,
+        portfolio: Portfolio,
+        apply_cancellation_token: CancellationToken,
+    ) -> std::result::Result<(), Vec<Error>> {
+        let solver_to_keep_compiling = portfolio.iter().map(|info| info.name.to_string()).collect();
+        self.compilation_manager
+            .stop_all_except(solver_to_keep_compiling)
+            .await;
+
         let mut state = self.state.lock().await;
         let new_objective = self.solver_manager.get_best_objective().await;
 
@@ -449,12 +463,20 @@ impl Scheduler {
                 }
             }
             self.solver_manager
-                .start_solvers(&resume_elements, state.prev_objective)
+                .start_solvers(
+                    &resume_elements,
+                    state.prev_objective,
+                    apply_cancellation_token.clone(),
+                )
                 .await?;
         }
 
         self.solver_manager
-            .start_solvers(&changes.to_start, state.prev_objective)
+            .start_solvers(
+                &changes.to_start,
+                state.prev_objective,
+                apply_cancellation_token,
+            )
             .await
     }
 

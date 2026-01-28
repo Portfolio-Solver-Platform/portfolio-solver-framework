@@ -1,10 +1,13 @@
 use std::collections::hash_map::Entry;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use tokio::sync::RwLock;
 use tokio::sync::watch;
 use tokio::sync::watch::Receiver;
 use tokio::sync::watch::error::SendError;
+use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio_util::sync::CancellationToken;
 
 use super::Conversion;
@@ -26,11 +29,11 @@ pub struct CompilationManager {
 #[derive(Clone, Debug)]
 enum Compilation {
     Done(WaitForResult),
-    Started(Arc<StartedCompilation>),
+    Running(Arc<RunningCompilation>),
 }
 
 #[derive(Debug)]
-struct StartedCompilation {
+struct RunningCompilation {
     cancellation_token: CancellationToken,
     receiver: Receiver<Option<WaitForResult>>,
 }
@@ -40,12 +43,8 @@ impl CompilationManager {
         Self {
             args,
             cancellation_token,
-            compilations: Default::default()
+            compilations: Default::default(),
         }
-    }
-
-    pub async fn is_started(&self, solver_name: &str) -> bool {
-        self.compilations.read().await.contains_key(solver_name)
     }
 
     pub async fn start(&self, solver_name: String) {
@@ -63,74 +62,61 @@ impl CompilationManager {
                 !is_compiling
             });
 
-        let new_compilations: Vec<_> = new_solvers.map(|solver_name| {
-            let cancellation_token = self.cancellation_token.child_token();
-            let args = self.args.clone();
-            let cancellation_token_clone = cancellation_token.clone();
-            let name_clone = solver_name.clone();
+        let new_compilations: Vec<_> = new_solvers
+            .map(|solver_name| {
+                let cancellation_token = self.cancellation_token.child_token();
+                let args = self.args.clone();
+                let cancellation_token_clone = cancellation_token.clone();
+                let name_clone = solver_name.clone();
 
-            let compilations = self.compilations.clone();
+                let compilations = self.compilations.clone();
 
-            let (tx, rx) = watch::channel(None);
+                let (tx, rx) = watch::channel(None);
 
-            tokio::spawn(async move {
-                let compilation = 
-                    compilation::convert_mzn(&args, &solver_name, cancellation_token_clone)
-                        .await
-                        .map_err(|e|{
-                            let error = WaitForError::from(&e);
-                            logging::error!(e.into());
-                            error
-                        })
-                        .map(Arc::new);
+                tokio::spawn(async move {
+                    let compilation =
+                        compilation::convert_mzn(&args, &solver_name, cancellation_token_clone)
+                            .await
+                            .map_err(|e| {
+                                let error = WaitForError::from(&e);
+                                logging::error!(e.into());
+                                error
+                            })
+                            .map(Arc::new);
 
-                if !compilation.is_error_cancelled() {
-                    compilations
-                        .write()
-                        .await
-                        .insert(solver_name.clone(), Compilation::Done(compilation.clone()));
-                }
-                // NOTE: If the compilation is cancelled, we do not here remove the started compilation from the
-                //       self.compilations map, because the only way the compilation gets cancelled is in stop_all,
-                //       which also removes it from the map.
+                    if !compilation.is_error_cancelled() {
+                        compilations
+                            .write()
+                            .await
+                            .insert(solver_name.clone(), Compilation::Done(compilation.clone()));
+                    }
+                    // NOTE: If the compilation is cancelled, we do not here remove the started compilation from the
+                    //       self.compilations map, because the only way the compilation gets cancelled is in stop_all,
+                    //       which also removes it from the map.
 
-                let _ = tx.send(Some(compilation)).map_err(|e| logging::error!(Error::SendError(solver_name, e).into()));
-            });
+                    let _ = tx
+                        .send(Some(compilation))
+                        .map_err(|e| logging::error!(Error::SendError(solver_name, e).into()));
+                });
 
-            (
-                name_clone,
-                StartedCompilation {
-                    cancellation_token,
-                    receiver: rx,
-                },
-            )
-        }).collect();
+                (
+                    name_clone,
+                    RunningCompilation {
+                        cancellation_token,
+                        receiver: rx,
+                    },
+                )
+            })
+            .collect();
 
         for (name, compilation) in new_compilations {
-            compilations.insert(name, Compilation::Started(Arc::new(compilation)));
+            compilations.insert(name, Compilation::Running(Arc::new(compilation)));
         }
-        
     }
 
-    pub async fn wait_for(
-        &self,
-        solver_name: &str,
-        cancellation_token: CancellationToken,
-    ) -> WaitForResult {
-        let compilation = {
-            tokio::select! {
-                compilations = self.compilations.read() => {
-                    Cancellable::Done(compilations.get(solver_name).cloned())
-                },
-                _ = cancellation_token.cancelled() => {
-                    Cancellable::Cancelled
-                }
-            }
-        };
-
-        let Cancellable::Done(compilation) = compilation else {
-            return Err(WaitForError::Cancelled);
-        };
+    /// Cancellation safe
+    pub async fn wait_for(&self, solver_name: &str) -> WaitForResult {
+        let compilation = { self.compilations.read().await.get(solver_name).cloned() };
 
         let Some(compilation) = compilation else {
             return Err(WaitForError::NotStarted(solver_name.to_string()));
@@ -138,17 +124,9 @@ impl CompilationManager {
 
         match compilation {
             Compilation::Done(result) => result,
-            Compilation::Started(compilation) => {
+            Compilation::Running(compilation) => {
                 let mut rx = compilation.receiver.clone();
-                let wait_for_compilation = rx.wait_for(|value| value.is_some());
-                let result = tokio::select! {
-                    result = wait_for_compilation => Cancellable::Done(result),
-                    _ = cancellation_token.cancelled() => Cancellable::Cancelled
-                };
-
-                let Cancellable::Done(result) = result else {
-                    return Err(WaitForError::Cancelled);
-                };
+                let result = rx.wait_for(|value| value.is_some()).await;
 
                 let Ok(value) = result else {
                     return Err(WaitForError::ReadChannelClosed(solver_name.to_string()));
@@ -171,7 +149,7 @@ impl CompilationManager {
         for solver_name in solver_names {
             if let Entry::Occupied(compilation) = compilations.entry(solver_name) {
                 match compilation.get() {
-                    Compilation::Started(started_compilation) => {
+                    Compilation::Running(started_compilation) => {
                         started_compilation.cancellation_token.cancel();
                         let (solver_name, _) = compilation.remove_entry();
                         logging::info!("stopped the compilation for solver '{solver_name}'");
@@ -186,6 +164,20 @@ impl CompilationManager {
                 );
             }
         }
+    }
+
+    /// Stop all running compilations except for the given solvers.
+    pub async fn stop_all_except(&self, exception_solver_names: HashSet<String>) {
+        let solvers_to_stop = {
+            self.compilations
+                .read()
+                .await
+                .keys()
+                .filter(|name| !exception_solver_names.contains(*name))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        self.stop_many(solvers_to_stop.into_iter()).await;
     }
 }
 
@@ -210,14 +202,9 @@ pub enum WaitForError {
     #[error("the compilation of solver '{0}' was still unfinished after waiting for it to be done")]
     CompilationUnfinishedAfterWaiting(String),
     #[error("waited for a failed compilation")]
-    Conversion
+    Conversion,
 }
 pub type WaitForResult = std::result::Result<Arc<Conversion>, WaitForError>;
-
-enum Cancellable<T> {
-    Done(T),
-    Cancelled,
-}
 
 impl IsCancelled for WaitForError {
     fn is_cancelled(&self) -> bool {
@@ -236,4 +223,3 @@ impl From<&compilation::Error> for WaitForError {
         }
     }
 }
-
