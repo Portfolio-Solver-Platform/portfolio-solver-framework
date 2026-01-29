@@ -19,7 +19,7 @@ docker build -t parasol .
 ```
 You can use the build argument `MAKE_JOBS` to set the number of jobs `make` is allowed to run concurrently in the Dockerfile. Example: `--build-arg MAKE_JOBS=8`.
 
-If you want to use CPLEX with the framework, due to licensing reasons, it cannot be included in the Dockerfile by default. Instead, you need to provide CPLEX to the Dockerfile yourself. For details on how to do this, see the note near the bottom of the Dockerfile (search for "CPLEX" to find the note). 
+If you want to use CPLEX with Parasol, due to licensing reasons, it cannot be included in the Dockerfile by default. Instead, you need to provide CPLEX to the Dockerfile yourself. For details on how to do this, see the note near the bottom of the Dockerfile (search for "CPLEX" to find the note). 
 
 The same can be done for FICO Xpress, instead search for "Xpress".
 
@@ -27,14 +27,14 @@ The same can be done for FICO Xpress, instead search for "Xpress".
 
 ### Direct
 
-This section will describe how to run the framework's binary executable.
+This section will describe how to run Parasol's binary executable.
 
 Prerequisites:
 - You are on a Unix system
 - You need to have `minizinc` installed
   - The solvers you want to use in the portfolio need to be installed for use in `minizinc`.
 
-When using the framework directly, you first need to build it with cargo: `cargo build --release`. This will place the executable in `./target/release/parasol`.
+When using Parasol directly, you first need to build it with cargo: `cargo build --release`. This will place the executable in `./target/release/parasol`.
 
 Use `<executable> --help` to see how to use the program, where `<executable>` is the path to the executable.
 
