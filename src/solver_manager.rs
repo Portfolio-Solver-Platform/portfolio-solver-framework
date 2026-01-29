@@ -141,6 +141,7 @@ impl SolverManager {
             solver_processes: solvers,
             solver_info: solver_info.clone(),
             mzn_to_fzn: compilation_manager,
+            current_solvers: Default::default(),
             args,
             best_objective,
             objective_type,
@@ -250,22 +251,27 @@ impl SolverManager {
         cmd
     }
 
-    fn start_solver(
+    async fn start_solver(
         &self,
         elem: &ScheduleElement,
         objective: Option<ObjectiveValue>,
         cancellation_token: CancellationToken,
     ) {
+        {
+            self.current_solvers.lock().await.insert(elem.id); // keep track of current running/suspended solvers
+        }
+
         // Clone all necessary fields before spawning
         let mzn_to_fzn = self.mzn_to_fzn.clone();
         let solver_info = self.solver_info.clone();
         let minizinc_exe = self.args.minizinc.minizinc_exe.clone();
         let solver_args = self.solver_args.clone();
-        let solvers = self.solver_processes.clone();
+        let solver_processes = self.solver_processes.clone();
         let tx = self.tx.clone();
         let available_cores = self.available_cores.clone();
         let objective_type = self.objective_type;
         let elem = elem.clone();
+        let current_solvers = self.current_solvers.clone();
         #[cfg(target_os = "linux")]
         let pin_yuck = self.args.pin_yuck;
 
@@ -326,7 +332,7 @@ impl SolverManager {
 
             let elem_id = elem.id;
             // we lock on solvers to guarantee we dont in another thread try to stop them at the same time
-            let mut map = solvers.lock().await;
+            let mut map = solver_processes.lock().await;
             let Ok(PipeCommand {
                 left: mut fzn,
                 right: mut ozn,
@@ -366,8 +372,8 @@ impl SolverManager {
 
             let solver_id = elem.id;
             let solver_name_for_wait = elem.info.name.clone();
-            let solvers_for_stdout = solvers.clone();
-            let solvers_for_wait = solvers.clone();
+            let solvers_for_stdout = solver_processes.clone();
+            let solvers_for_wait = solver_processes.clone();
             let available_cores_for_wait = available_cores.clone();
 
             let cancellation_token_stdout = cancellation_token.clone();
@@ -413,7 +419,8 @@ impl SolverManager {
                         cores_guard.insert(core_id);
                     }
                 }
-
+                logging::info!("solver exitted {solver_id}");
+                current_solvers.lock().await.remove(&solver_id);
                 let mut map = solvers_for_wait.lock().await;
                 map.remove(&solver_id);
             });
@@ -425,7 +432,7 @@ impl SolverManager {
         pipe: JoinHandle<std::io::Result<u64>>,
         tx: tokio::sync::mpsc::UnboundedSender<Msg>,
         solver_id: u64,
-        solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
+        solver_processes: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         objective_type: ObjectiveType,
         cancellation_token: CancellationToken,
     ) {
@@ -434,7 +441,7 @@ impl SolverManager {
         let mut parser = solver_output::Parser::new(objective_type);
 
         let mut local_best: Option<ObjectiveValue> = {
-            let map = solvers.lock().await;
+            let map = solver_processes.lock().await;
             map.get(&solver_id).and_then(|s| s.best_objective)
         };
 
@@ -478,7 +485,7 @@ impl SolverManager {
                 }) => {
                     if objective_type.is_better(local_best, o) {
                         local_best = Some(o);
-                        let mut map = solvers.lock().await;
+                        let mut map = solver_processes.lock().await;
                         if let Some(state) = map.get_mut(&solver_id) {
                             state.best_objective = local_best;
                         }
@@ -517,15 +524,16 @@ impl SolverManager {
         }
     }
 
-    pub fn start_solvers(
+    pub async fn start_solvers(
         &self,
         schedule: &[ScheduleElement],
         objective: Option<ObjectiveValue>,
         cancellation_token: CancellationToken,
     ) {
-        schedule
+        let futures = schedule
             .iter()
-            .for_each(|elem| self.start_solver(elem, objective, cancellation_token.clone()))
+            .map(|elem| self.start_solver(elem, objective, cancellation_token.clone()));
+        join_all(futures).await;
     }
 
     async fn send_signals_to_solver(
@@ -544,10 +552,10 @@ impl SolverManager {
     async fn send_signals_to_solvers(
         signals: Vec<Signal>,
         ids: &[u64],
-        solvers: tokio::sync::MutexGuard<'_, HashMap<u64, SolverProcess>>,
+        solver_processes: tokio::sync::MutexGuard<'_, HashMap<u64, SolverProcess>>,
     ) -> std::result::Result<(), Vec<Error>> {
         let futures = ids.iter().map(async |id| {
-            let pid = match solvers.get(&id) {
+            let pid = match solver_processes.get(&id) {
                 Some(state) => state.pid,
                 None => return Err(Error::InvalidSolver(format!("Solver {id} not running"))),
             };
@@ -566,10 +574,10 @@ impl SolverManager {
 
     #[allow(dead_code)]
     async fn send_signals_to_all_solvers(
-        solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
+        solver_processes: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         signals: Vec<Signal>,
     ) -> std::result::Result<(), Vec<Error>> {
-        let solvers_guard = solvers.lock().await;
+        let solvers_guard = solver_processes.lock().await;
         let ids: Vec<u64> = { solvers_guard.keys().cloned().collect() };
         Self::send_signals_to_solvers(signals, &ids, solvers_guard).await
     }
@@ -609,20 +617,20 @@ impl SolverManager {
     }
 
     async fn _stop_solver(
-        solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
+        solver_processes: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         id: u64,
     ) -> std::result::Result<(), Error> {
-        let mut map = solvers.lock().await;
+        let mut map = solver_processes.lock().await;
         Self::kill_solver(id, &mut map).await
     }
 
     async fn _stop_solvers(
-        solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
+        solver_processes: Arc<Mutex<HashMap<u64, SolverProcess>>>,
         ids: &[u64],
     ) -> std::result::Result<(), Vec<Error>> {
         let mut results = Vec::new();
         {
-            let mut map = solvers.lock().await;
+            let mut map = solver_processes.lock().await;
             for id in ids {
                 results.push(Self::kill_solver(*id, &mut map).await);
             }
@@ -638,12 +646,12 @@ impl SolverManager {
     }
 
     async fn _stop_all_solvers(
-        solvers: Arc<Mutex<HashMap<u64, SolverProcess>>>,
+        solver_processes: Arc<Mutex<HashMap<u64, SolverProcess>>>,
     ) -> std::result::Result<(), Vec<Error>> {
         let mut results = Vec::new();
 
         {
-            let mut map = solvers.lock().await;
+            let mut map = solver_processes.lock().await;
             let ids: Vec<u64> = map.keys().copied().collect();
             for id in ids {
                 results.push(Self::kill_solver(id, &mut map).await);
@@ -673,7 +681,7 @@ impl SolverManager {
     }
 
     pub async fn active_solver_ids(&self) -> HashSet<u64> {
-        self.solver_processes.lock().await.keys().copied().collect()
+        self.current_solvers.lock().await.clone()
     }
 
     pub async fn solvers_sorted_by_mem(&self, ids: &[u64], system: &System) -> Vec<(u64, u64)> {

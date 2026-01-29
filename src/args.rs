@@ -84,6 +84,10 @@ pub struct RunArgs {
     #[arg(long, default_value = "discover", help_heading = "Execution")]
     pub solver_config_mode: SolverConfigMode,
 
+    /// Whether it should kill solvers if you are nearing the system memory limit
+    #[arg(long, help_heading = "Execution")]
+    pub enforce_memory: bool,
+
     // === Timing ===
     /// The minimum time (in seconds) the initial static schedule will be run before using the AI's schedule
     #[arg(long, default_value = "5", help_heading = "Timing")]
