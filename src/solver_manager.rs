@@ -30,8 +30,6 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("the solver was cancelled")]
-    IsCancelled,
     #[error("waited for a failed compilation")]
     WaitForCompilation(#[from] compilation_manager::WaitForError),
     #[error("invalid solver: {0}")]
@@ -251,12 +249,7 @@ impl SolverManager {
         cmd
     }
 
-    async fn start_solver(
-        &self,
-        elem: &ScheduleElement,
-        objective: Option<ObjectiveValue>,
-        cancellation_token: CancellationToken,
-    ) {
+    async fn start_solver(&self, elem: &ScheduleElement, cancellation_token: CancellationToken) {
         {
             self.current_solvers.lock().await.insert(elem.id); // keep track of current running/suspended solvers
         }
@@ -274,18 +267,20 @@ impl SolverManager {
         let current_solvers = self.current_solvers.clone();
         #[cfg(target_os = "linux")]
         let pin_yuck = self.args.pin_yuck;
+        let best_objective = self.best_objective.clone();
 
         tokio::spawn(async move {
             let solver_name = &elem.info.name;
             let cores = elem.info.cores;
             mzn_to_fzn.start(solver_name.clone()).await;
 
-            let Ok(conversion_paths) = cancellation_token
+            let Some(conversion_paths) = cancellation_token
                 .run_until_cancelled(mzn_to_fzn.wait_for(solver_name))
                 .await
-                .ok_or(Error::IsCancelled)
-                .map_err(|e| logging::error!(e.into()))
             else {
+                logging::info!(
+                    "solver '{solver_name}' was cancelled while waiting for compilation"
+                );
                 return;
             };
 
@@ -297,6 +292,7 @@ impl SolverManager {
             // Create ObjectiveInserter inside the spawn
             let objective_inserter = ObjectiveInserter::new(solver_info.clone());
 
+            let objective = *best_objective.read().await;
             let (fzn_final_path, fzn_guard) = if let Some(obj) = objective {
                 if let Ok(new_temp_file) = objective_inserter
                     .insert_objective(solver_name, conversion_paths.fzn(), &objective_type, obj)
@@ -527,12 +523,11 @@ impl SolverManager {
     pub async fn start_solvers(
         &self,
         schedule: &[ScheduleElement],
-        objective: Option<ObjectiveValue>,
         cancellation_token: CancellationToken,
     ) {
         let futures = schedule
             .iter()
-            .map(|elem| self.start_solver(elem, objective, cancellation_token.clone()));
+            .map(|elem| self.start_solver(elem, cancellation_token.clone()));
         join_all(futures).await;
     }
 

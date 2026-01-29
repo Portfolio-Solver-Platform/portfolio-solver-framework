@@ -477,20 +477,12 @@ impl Scheduler {
                 }
             }
             self.solver_manager
-                .start_solvers(
-                    &resume_elements,
-                    state.prev_objective,
-                    apply_cancellation_token.0.clone(),
-                )
+                .start_solvers(&resume_elements, apply_cancellation_token.0.clone())
                 .await;
         }
 
         self.solver_manager
-            .start_solvers(
-                &changes.to_start,
-                state.prev_objective,
-                apply_cancellation_token.0,
-            )
+            .start_solvers(&changes.to_start, apply_cancellation_token.0)
             .await;
 
         Ok(())
