@@ -1,56 +1,18 @@
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-    process::ExitStatus,
-};
+use std::{collections::HashSet, path::Path, process::ExitStatus};
 
 use serde_json::{Map, Value};
 use tokio::process::Command;
 
 use crate::logging;
+use crate::solver_config::{Executable, Solver, SolverInputType, Solvers, SupportedStdFlags};
 
-#[derive(Debug, Clone)]
-pub struct Solver {
-    id: String,
-    executable: Option<Executable>,
-    supported_std_flags: SupportedStdFlags,
-    input_type: SolverInputType,
+pub async fn discover(minizinc_exe: &Path) -> Result<Solvers> {
+    let output = run_discover_command(minizinc_exe).await?;
+    let json = serde_json::from_slice::<Value>(&output)?;
+    Solvers::from_json(json)
 }
-
-#[derive(Debug, Clone, Default)]
-pub struct SupportedStdFlags {
-    pub a: bool,
-    pub i: bool,
-    pub f: bool,
-    pub p: bool,
-}
-
-#[derive(Debug, Clone)]
-pub enum SolverInputType {
-    Fzn,
-    Json,
-}
-
-#[derive(Debug, Clone)]
-pub struct Executable(PathBuf);
-
-#[derive(Debug, Clone)]
-pub struct Solvers(Vec<Solver>);
 
 impl Solvers {
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Solver> {
-        self.0.iter()
-    }
-
-    pub fn get_by_id(&self, name: &str) -> Option<&Solver> {
-        let lowered_id = name.to_lowercase();
-        self.0.iter().find(|solver| solver.id == lowered_id)
-    }
-
     fn from_json(json: Value) -> Result<Self> {
         let Value::Array(array) = json else {
             return Err(Error::InvalidOutputFormat(
@@ -67,9 +29,14 @@ impl Solvers {
                     input_type,
                 }) => {
                     if input_type == "MZN" || input_type == "NL" {
-                        logging::info!(
+                        let msg = format!(
                             "Solver with ID '{solver_id}' has unsupported input type '{input_type}'"
                         );
+                        if solver_id == crate::solvers::SELF_ID {
+                            logging::info!("{msg}");
+                        } else {
+                            logging::warning!("{msg}");
+                        }
                     } else {
                         logging::error!(
                             SolverParseError::UnknownInputType {
@@ -152,15 +119,39 @@ impl Solver {
     ) -> Option<SolverParseResult<Executable>> {
         const FIELD_NAME: &str = "executable";
 
-        Self::field_from_json(FIELD_NAME, object).ok().map(|json| {
-            let Value::String(s) = json else {
-                return Err(SolverParseError::FieldNotAString(
+        Self::field_from_json(FIELD_NAME, object)
+            .ok()
+            .map(|json| match json {
+                Value::String(s) => Ok(Executable(s.into(), Vec::new())),
+                Value::Array(values) => Self::executable_from_array(values),
+                _ => Err(SolverParseError::FieldNotAString(
                     FIELD_NAME.to_string(),
                     json,
-                ));
-            };
-            Ok(Executable(s.into()))
-        })
+                )),
+            })
+    }
+
+    fn executable_from_array(array: Vec<Value>) -> SolverParseResult<Executable> {
+        let mut values = array
+            .into_iter()
+            .map(|value| {
+                if let Value::String(s) = value {
+                    Ok(s)
+                } else {
+                    Err(SolverParseError::ExecutableNonStringArrayElement(
+                        value.clone(),
+                    ))
+                }
+            })
+            .collect::<SolverParseResult<Vec<_>>>()?
+            .into_iter();
+
+        let first = values
+            .next()
+            .ok_or(SolverParseError::ExecutableArrayEmpty)?;
+
+        let rest = values.collect::<Vec<_>>();
+        Ok(Executable(first.into(), rest))
     }
 
     fn input_type_from_json(
@@ -214,12 +205,6 @@ impl Solver {
     }
 }
 
-impl Executable {
-    pub fn into_command(self) -> Command {
-        Command::new(self.0)
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 enum SolverParseError {
     #[error("JSON is not an object: {0}")]
@@ -238,16 +223,16 @@ enum SolverParseError {
         input_type: String,
     },
 
+    #[error("Solver's field 'executable' is an array but an element was not a string: {0}")]
+    ExecutableNonStringArrayElement(Value),
+
+    #[error("Solver's field 'executable' is an empty array")]
+    ExecutableArrayEmpty,
+
     #[error("A std flag is not a string: {0}")]
     StdFlagNotAString(Value),
 }
 type SolverParseResult<T> = std::result::Result<T, SolverParseError>;
-
-pub async fn discover(minizinc_exe: &Path) -> Result<Solvers> {
-    let output = run_discover_command(minizinc_exe).await?;
-    let json = serde_json::from_slice::<Value>(&output)?;
-    Solvers::from_json(json)
-}
 
 async fn run_discover_command(minizinc_exe: &Path) -> Result<Vec<u8>> {
     let mut cmd = Command::new(minizinc_exe);

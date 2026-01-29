@@ -1,10 +1,12 @@
 use crate::{
-    args::{Args, Verbosity},
+    args::{RunArgs, Verbosity},
     config::Config,
     logging,
     model_parser::ObjectiveValue,
-    solver_discovery,
-    solver_manager::{Error, SolverManager},
+    mzn_to_fzn::compilation_manager::CompilationManager,
+    signal_handler::SignalEvent,
+    solver_config,
+    solver_manager::{self, Error, SolverManager},
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -12,6 +14,15 @@ use std::time::Duration;
 use sysinfo::System;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Clone)]
+pub struct SchedulerChildCancellationToken(CancellationToken);
+
+impl SchedulerChildCancellationToken {
+    pub fn cancel(&self) {
+        self.0.cancel()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ScheduleElement {
@@ -66,7 +77,8 @@ struct ScheduleChanges {
     to_resume: Vec<u64>,
 }
 
-struct MemoryEnforcerState {
+#[derive(Debug)]
+struct State {
     running_solvers: HashMap<u64, SolverInfo>,
     suspended_solvers: HashMap<u64, SolverInfo>,
     system: System,
@@ -78,8 +90,16 @@ struct MemoryEnforcerState {
 }
 
 pub struct Scheduler {
-    state: Arc<Mutex<MemoryEnforcerState>>,
+    state: Arc<Mutex<State>>,
     pub solver_manager: Arc<SolverManager>,
+    scheduler_cancellation_token: CancellationToken,
+    compilation_manager: Arc<CompilationManager>,
+}
+
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        self.scheduler_cancellation_token.cancel();
+    }
 }
 
 fn is_over_threshold(used: f64, total: f64, threshold: f64) -> bool {
@@ -88,15 +108,48 @@ fn is_over_threshold(used: f64, total: f64, threshold: f64) -> bool {
 
 impl Scheduler {
     pub async fn new(
-        args: &Args,
+        args: &RunArgs,
         config: &Config,
-        solver_info: Arc<solver_discovery::Solvers>,
-        token: CancellationToken,
+        solver_info: Arc<solver_config::Solvers>,
+        compilation_manager: Arc<CompilationManager>,
+        program_cancellation_token: CancellationToken,
+        mut suspend_and_resume_signal_rx: tokio::sync::mpsc::UnboundedReceiver<SignalEvent>,
     ) -> std::result::Result<Self, Error> {
+        let scheduler_cancellation_token = program_cancellation_token.child_token();
         let solver_manager = Arc::new(
-            SolverManager::new(args.clone(), config.solver_args.clone(), solver_info, token)
-                .await?,
+            SolverManager::new(
+                args.clone(),
+                config.solver_args.clone(),
+                solver_info,
+                compilation_manager.clone(),
+                program_cancellation_token.clone(),
+            )
+            .await?,
         );
+
+        let solver_manager_clone = solver_manager.clone();
+        let scheduler_cancellation_token_clone = scheduler_cancellation_token.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = scheduler_cancellation_token_clone.cancelled() => break,
+                    event = suspend_and_resume_signal_rx.recv() => {
+                        let Some(event) = event else { break };
+                        let result = match event {
+                            SignalEvent::Suspend => {
+                                let res = solver_manager_clone.suspend_all_solvers().await;
+                                nix::sys::signal::raise(nix::sys::signal::Signal::SIGSTOP).ok();
+                                res
+                            }
+                            SignalEvent::Resume => solver_manager_clone.resume_all_solvers().await,
+                        };
+                        if let Err(e) = result {
+                            handle_schedule_errors(e);
+                        }
+                    }
+                }
+            }
+        });
 
         let memory_limit = std::env::var("MEMORY_LIMIT")
             .ok()
@@ -106,7 +159,7 @@ impl Scheduler {
 
         let debug_verbosity = args.verbosity;
 
-        let state = Arc::new(Mutex::new(MemoryEnforcerState {
+        let state = Arc::new(Mutex::new(State {
             running_solvers: HashMap::new(),
             suspended_solvers: HashMap::new(),
             system: System::new_all(),
@@ -120,17 +173,29 @@ impl Scheduler {
         let state_clone = state.clone();
         let solver_manager_clone = solver_manager.clone();
         let config_clone = config.clone();
-        tokio::spawn(async move {
-            Self::memory_enforcer_loop(state_clone, solver_manager_clone, config_clone).await;
-        });
+        if args.enforce_memory {
+            let scheduler_cancellation_token_clone = scheduler_cancellation_token.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = scheduler_cancellation_token_clone.cancelled() => {},
+                    _ = Self::memory_enforcer_loop(state_clone, solver_manager_clone, config_clone) => {}
+                }
+            });
+        }
 
         Ok(Self {
             state,
             solver_manager,
+            scheduler_cancellation_token,
+            compilation_manager,
         })
     }
 
-    fn get_memory_usage(state: &mut MemoryEnforcerState) -> (f64, f64) {
+    pub fn create_apply_token(&self) -> SchedulerChildCancellationToken {
+        SchedulerChildCancellationToken(self.scheduler_cancellation_token.child_token())
+    }
+
+    fn get_memory_usage(state: &mut State) -> (f64, f64) {
         state
             .system
             .refresh_processes(sysinfo::ProcessesToUpdate::All, false);
@@ -146,7 +211,7 @@ impl Scheduler {
     }
 
     async fn kill_suspended_until_under_threshold(
-        state: &mut MemoryEnforcerState,
+        state: &mut State,
         solver_manager: &Arc<SolverManager>,
         mut used_memory: f64,
         total_memory: f64,
@@ -171,7 +236,7 @@ impl Scheduler {
     }
 
     async fn kill_running_until_under_threshold(
-        state: &mut MemoryEnforcerState,
+        state: &mut State,
         solver_manager: &Arc<SolverManager>,
         mut used_memory: f64,
         total_memory: f64,
@@ -227,17 +292,15 @@ impl Scheduler {
         used_memory
     }
 
-    async fn remove_exited_solvers(
-        state: &mut MemoryEnforcerState,
-        solver_manager: &Arc<SolverManager>,
-    ) {
+    async fn remove_exited_solvers(state: &mut State, solver_manager: &Arc<SolverManager>) {
         let active = solver_manager.active_solver_ids().await;
+
         state.running_solvers.retain(|id, _| active.contains(id));
         state.suspended_solvers.retain(|id, _| active.contains(id));
     }
 
     async fn memory_enforcer_loop(
-        state: Arc<Mutex<MemoryEnforcerState>>,
+        state: Arc<Mutex<State>>,
         solver_manager: Arc<SolverManager>,
         config: Config,
     ) {
@@ -246,7 +309,7 @@ impl Scheduler {
 
         loop {
             interval.tick().await;
-            let mut state: tokio::sync::MutexGuard<'_, MemoryEnforcerState> = state.lock().await;
+            let mut state: tokio::sync::MutexGuard<'_, State> = state.lock().await;
             Self::remove_exited_solvers(&mut state, &solver_manager).await;
             let (used, total) = Self::get_memory_usage(&mut state);
             if !is_over_threshold(used, total, config.memory_threshold) {
@@ -278,7 +341,7 @@ impl Scheduler {
 
     async fn categorize_schedule(
         schedule: Schedule,
-        state: &mut MemoryEnforcerState,
+        state: &mut State,
         solver_manager: Arc<SolverManager>,
     ) -> ScheduleChanges {
         Self::remove_exited_solvers(state, &solver_manager).await;
@@ -309,7 +372,7 @@ impl Scheduler {
         }
     }
 
-    fn apply_changes_to_state(state: &mut MemoryEnforcerState, changes: &ScheduleChanges) {
+    fn apply_changes_to_state(state: &mut State, changes: &ScheduleChanges) {
         for elem in &changes.to_start {
             state.running_solvers.insert(elem.id, elem.info.clone());
         }
@@ -327,7 +390,20 @@ impl Scheduler {
         }
     }
 
-    pub async fn apply(&mut self, portfolio: Portfolio) -> std::result::Result<(), Vec<Error>> {
+    pub async fn apply(
+        &mut self,
+        portfolio: Portfolio,
+        apply_cancellation_token: SchedulerChildCancellationToken,
+        stop_other_compiling_solvers: bool,
+    ) -> std::result::Result<(), Vec<Error>> {
+        if stop_other_compiling_solvers {
+            let solver_to_keep_compiling =
+                portfolio.iter().map(|info| info.name.to_string()).collect();
+            self.compilation_manager
+                .stop_all_except(solver_to_keep_compiling)
+                .await;
+        }
+
         let mut state = self.state.lock().await;
         let new_objective = self.solver_manager.get_best_objective().await;
 
@@ -344,6 +420,7 @@ impl Scheduler {
                 let solver_objectives = self.solver_manager.get_solver_objectives().await;
 
                 let objective_type = self.solver_manager.objective_type();
+                logging::info!("{:?}", solver_objectives);
                 let to_restart: Vec<u64> = solver_objectives
                     .iter()
                     .filter(|(_, best)| objective_type.is_better(**best, obj))
@@ -354,6 +431,7 @@ impl Scheduler {
                     logging::info!("solver objectives: {:?}", solver_objectives);
                     logging::info!("solver to restart {:?}", to_restart);
                 }
+
                 self.solver_manager.stop_solvers(&to_restart).await?;
 
                 for id in &to_restart {
@@ -399,18 +477,20 @@ impl Scheduler {
                 }
             }
             self.solver_manager
-                .start_solvers(&resume_elements, state.prev_objective)
-                .await?;
+                .start_solvers(&resume_elements, apply_cancellation_token.0.clone())
+                .await;
         }
 
         self.solver_manager
-            .start_solvers(&changes.to_start, state.prev_objective)
-            .await
+            .start_solvers(&changes.to_start, apply_cancellation_token.0)
+            .await;
+
+        Ok(())
     }
 
     fn assign_ids(
         portfolio: Portfolio,
-        state: &mut tokio::sync::MutexGuard<'_, MemoryEnforcerState>,
+        state: &mut tokio::sync::MutexGuard<'_, State>,
     ) -> Schedule {
         let running_solvers: Vec<(u64, SolverInfo)> = state
             .running_solvers
@@ -449,4 +529,9 @@ impl Scheduler {
 
         schedule
     }
+}
+
+fn handle_schedule_errors(errors: Vec<solver_manager::Error>) {
+    logging::error_msg!("got the following errors when applying the schedule:");
+    errors.into_iter().for_each(|e| logging::error!(e.into()));
 }

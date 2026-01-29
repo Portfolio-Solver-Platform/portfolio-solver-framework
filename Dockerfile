@@ -1,4 +1,4 @@
-FROM rust:1.91 AS rust
+FROM rust:1.93 AS rust
 FROM rust AS builder
 
 # The number of make jobs used when `make` is called
@@ -73,10 +73,10 @@ RUN wget -q https://github.com/informarte/yuck/releases/download/20251106/yuck-2
 
 FROM base AS or-tools
 
-RUN wget -q https://github.com/google/or-tools/releases/download/v9.14/or-tools_amd64_ubuntu-24.04_cpp_v9.14.6206.tar.gz -O or-tools.tar.gz \
-    && tar -xzf or-tools.tar.gz \
+WORKDIR /or-tools
+RUN wget -q https://github.com/google/or-tools/releases/download/v9.15/or-tools_amd64_ubuntu-24.04_cpp_v9.15.6755.tar.gz -O or-tools.tar.gz \
+    && tar -xzf or-tools.tar.gz --strip-components=1 \
     && rm or-tools.tar.gz \
-    && mv or-tools_x86_64_Ubuntu-24.04_cpp_v9.14.6206 /or-tools \
     && mkdir /opt/or-tools \
     && mv /or-tools/bin /opt/or-tools/bin \
     && mv /or-tools/lib /opt/or-tools/lib \
@@ -125,7 +125,7 @@ RUN mkdir -p /opt/pumpkin/bin \
 FROM base AS minizinc-source
 
 WORKDIR /source
-ENV MINIZINC_SOURCE_VERSION=2.9.4
+ENV MINIZINC_SOURCE_VERSION=2.9.5
 RUN wget -qO minizinc.tgz https://github.com/MiniZinc/MiniZincIDE/releases/download/${MINIZINC_SOURCE_VERSION}/MiniZincIDE-${MINIZINC_SOURCE_VERSION}-bundle-linux-x86_64.tgz \
     && tar xf minizinc.tgz --strip-components=1 \
     && rm minizinc.tgz \
@@ -180,7 +180,7 @@ FROM base AS solver-configs
 
 COPY ./minizinc/solvers/ /solvers/
 WORKDIR /solvers
-RUN jq '.executable = "/usr/local/bin/portfolio-solver-framework"' ./framework.msc.template > ./framework.msc
+RUN jq '.executable[0] = "/usr/local/bin/parasol"' ./parasol.msc.template > ./parasol.msc
 RUN jq '.executable = "/usr/local/bin/fzn-picat"' ./picat.msc.template > picat.msc.temp
 RUN jq '.mznlib = "/opt/fzn_picat/mznlib"' picat.msc.temp > ./picat.msc
 COPY --from=huub /huub/share/minizinc/solvers/huub.msc ./huub.msc.template
@@ -265,7 +265,7 @@ COPY --from=chuffed /opt/chuffed/ /opt/chuffed/
 COPY --from=dexter /opt/dexter/ /opt/dexter/
 
 COPY ./minizinc/Preferences.json /root/.minizinc/
-COPY --from=builder /usr/src/app/target/release/portfolio-solver-framework /usr/local/bin/portfolio-solver-framework
+COPY --from=builder /usr/src/app/target/release/parasol /usr/local/bin/parasol
 COPY command-line-ai ./command-line-ai
 
 # Gecode also uses dynamically linked libraries (DLL), so register these with the system.
@@ -284,6 +284,8 @@ RUN echo "/opt/gecode/lib" > /etc/ld.so.conf.d/gecode.conf \
 #       1. Copy the entire xpressmp folder (the entire Xpress installation) into the root of this repository.
 #       2. Uncomment the following line of code:
 # COPY ./xpressmp/ /opt/xpressmp/
+
+RUN parasol build-solver-cache
 
 FROM builder AS ci
 
