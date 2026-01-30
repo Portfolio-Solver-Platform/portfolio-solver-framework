@@ -35,7 +35,7 @@ def resolve_schedules(args: list[str]) -> list[Path]:
 
 
 def run_parasol(model: Path, data: Path | None, schedule: Path, cores: int,
-                timeout: int | None, solver: str) -> tuple[float, str | None, str]:
+                timeout: int | None, solver: str) -> tuple[float, str | None, str, str]:
     cmd = []
     if timeout:
         cmd.extend(["timeout", str(timeout)])
@@ -51,19 +51,21 @@ def run_parasol(model: Path, data: Path | None, schedule: Path, cores: int,
     result = subprocess.run(cmd, capture_output=True, text=True)
     elapsed_ms = (time.perf_counter() - start) * 1000
 
-    objectives = re.findall(r'_objective\s*=\s*(-?\d+);', result.stdout)
+    stdout = result.stdout
+
+    objectives = re.findall(r'_objective\s*=\s*(-?\d+);', stdout)
     objective = objectives[-1] if objectives else None
 
-    if "==========" in result.stdout:
+    if "==========" in stdout:
         status = "Optimal"
-    elif "=====UNSATISFIABLE=====" in result.stdout:
+    elif "=====UNSATISFIABLE=====" in stdout:
         status = "Unsat"
-    elif "----------" in result.stdout and not objective:
+    elif "----------" in stdout and not objective:
         status = "Optimal"  # SAT problem with solution found
     else:
         status = "Unknown"
 
-    return elapsed_ms, objective, status
+    return elapsed_ms, objective, status, stdout
 
 
 def run_benchmark(problems_base: Path, schedules: list[Path], cores: int,
@@ -86,11 +88,12 @@ def run_benchmark(problems_base: Path, schedules: list[Path], cores: int,
                 print(f"  {name}: ", end="", flush=True)
 
                 for run in range(runs):
-                    time_ms, objective, status = run_parasol(model, data, schedule, cores, timeout, solver)
+                    time_ms, objective, status, stdout = run_parasol(model, data, schedule, cores, timeout, solver)
                     writer.writerow([schedule.stem, name, model_name, f"{time_ms:.0f}", objective or "", status])
                     f.flush()
                     short = "US" if status == "Unsat" else status[0]
                     print(f"{time_ms/1000:.1f}s({short}) ", end="", flush=True)
+                    print(f"\n--- stdout ---\n{stdout}--- end ---")
 
                 print()
 
