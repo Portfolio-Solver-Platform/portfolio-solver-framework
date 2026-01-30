@@ -19,6 +19,8 @@ RUN touch src/main.rs && cargo build --release --locked --quiet
 
 FROM minizinc/mznc2025:latest AS base-small
 
+WORKDIR /app
+
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     ca-certificates \
     # Java is needed at runtime by Yuck
@@ -30,8 +32,6 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base-small AS base
-
-WORKDIR /app
 
 # Fix paths for cargo
 ENV CARGO_HOME=/usr/local/cargo
