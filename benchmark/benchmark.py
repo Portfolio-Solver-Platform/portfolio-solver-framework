@@ -9,15 +9,51 @@ import time
 from pathlib import Path
 
 PROBLEMS = [
-    ("test_unsat/test_unsat.mzn", None),                                                                                                                                                                             
-    ("sudoku_fixed/sudoku_fixed.mzn", "sudoku_fixed/sudoku_p20.dzn"),
-    ("accap/accap.mzn", "accap/accap_instance6.dzn"),
-    ("rcpsp/rcpsp.mzn", "rcpsp/00.dzn"),
-    ("gbac/gbac.mzn", "gbac/UD2-gbac.dzn"),
-    ("amaze/amaze.mzn", "amaze/2012-03-08.dzn"),
-    ("bacp/bacp-1.mzn", None),
-    ("bacp/bacp-2.mzn", None),
-    ("steelmillslab/steelmillslab.mzn", "steelmillslab/bench_2_0.dzn"),
+    # # --- Original problems ---
+    # ("test_unsat/test_unsat.mzn", None),
+    # ("sudoku_fixed/sudoku_fixed.mzn", "sudoku_fixed/sudoku_p20.dzn"),
+    # ("accap/accap.mzn", "accap/accap_instance6.dzn"),
+    # ("rcpsp/rcpsp.mzn", "rcpsp/00.dzn"),
+    # ("gbac/gbac.mzn", "gbac/UD2-gbac.dzn"),
+    # ("amaze/amaze.mzn", "amaze/2012-03-08.dzn"),
+    # ("bacp/bacp-1.mzn", None),
+    # ("bacp/bacp-2.mzn", None),
+    # ("steelmillslab/steelmillslab.mzn", "steelmillslab/bench_2_0.dzn"),
+
+    # --- Stress tests (specifically designed to stress solvers) ---
+    ("search_stress/search_stress.mzn", "search_stress/08_08.dzn"),  # Search stress
+    ("slow_convergence/slow_convergence.mzn", "slow_convergence/0300.dzn"),  # Slow bound convergence
+
+    # --- Pure SAT puzzles (different constraint structures) ---
+    ("hitori/hitori.mzn", "hitori/h11-1.dzn"),  # Grid-based SAT
+    ("nonogram/non.mzn", "nonogram/non_fast_3.dzn"),  # Line-based constraints
+    ("fillomino/fillomino.mzn", "fillomino/6x6_0.dzn"),  # Region-based SAT
+
+    # --- Hard combinatorial problems ---
+    ("costas-array/CostasArray.mzn", "costas-array/14.dzn"),  # All-different + math
+    ("ghoulomb/ghoulomb.mzn", "ghoulomb/3-8-20.dzn"),  # Golomb ruler variant
+
+    # --- Geometric/packing problems ---
+    ("rectangle-packing/rect_packing.mzn", "rectangle-packing/rpp09_false.dzn"),  # 2D packing (UNSAT)
+    ("rectangle-packing/rect_packing.mzn", "rectangle-packing/rpp12_true.dzn"),  # 2D packing (SAT)
+    ("pentominoes/pentominoes-int.mzn", "pentominoes/03.dzn"),  # Polyomino placement
+
+    # --- Routing/TSP variants ---
+    ("atsp/atsp.mzn", "atsp/instance5_0p15.dzn"),  # Asymmetric TSP
+    ("cvrp/cvrp.mzn", "cvrp/simple2.dzn"),  # Capacitated VRP (small)
+    ("tsptw/tsptw.mzn", "tsptw/n20w160.001.dzn"),  # TSP with time windows
+
+    # --- Job shop scheduling variants ---
+    ("fjsp/fjsp.mzn", "fjsp/easy01.dzn"),  # Flexible job shop (easy)
+    ("fjsp/fjsp.mzn", "fjsp/med04.dzn"),  # Flexible job shop (medium)
+    ("openshop/openshop.mzn", "openshop/gp10-4.dzn"),  # Open shop scheduling
+
+    # --- Global constraint heavy ---
+    ("multi-knapsack/mknapsack.mzn", "multi-knapsack/mknap1-5.dzn"),  # Multi-dim knapsack
+    ("black-hole/black-hole.mzn", "black-hole/4.dzn"),  # Card game (global constraints)
+
+    # --- Classic puzzles ---
+    ("mqueens/mqueens2.mzn", "mqueens/n12.dzn"),  # N-queens variant
 ]
 
 
@@ -74,7 +110,7 @@ def run_benchmark(problems_base: Path, schedules: list[Path], cores: int,
 
     with open(output, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["schedule", "name", "model", "time_ms", "objective", "status"])
+        writer.writerow(["schedule", "problem", "name", "model", "time_ms", "objective", "optimal"])
 
         for schedule in schedules:
             print(f"\nSchedule: {schedule.name}")
@@ -82,6 +118,7 @@ def run_benchmark(problems_base: Path, schedules: list[Path], cores: int,
             for model_rel, data_rel in PROBLEMS:
                 model = problems_base / model_rel
                 data = problems_base / data_rel if data_rel else None
+                problem = Path(model_rel).parts[0]  # Folder name
                 name = data.stem if data else Path(model_rel).stem
                 model_name = Path(model_rel).stem
 
@@ -89,7 +126,7 @@ def run_benchmark(problems_base: Path, schedules: list[Path], cores: int,
 
                 for run in range(runs):
                     time_ms, objective, status, stdout = run_parasol(model, data, schedule, cores, timeout, solver)
-                    writer.writerow([schedule.stem, name, model_name, f"{time_ms:.0f}", objective or "", status])
+                    writer.writerow([schedule.stem, problem, name, model_name, f"{time_ms:.0f}", objective or "", status])
                     f.flush()
                     short = "US" if status == "Unsat" else status[0]
                     print(f"{time_ms/1000:.1f}s({short}) ", end="", flush=True)
