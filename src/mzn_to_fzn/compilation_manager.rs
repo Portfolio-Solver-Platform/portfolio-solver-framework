@@ -38,6 +38,12 @@ struct RunningCompilation {
     receiver: Receiver<Option<WaitForResult>>,
 }
 
+pub enum CompilationStatus {
+    Done,
+    Running,
+    NotStarted,
+}
+
 impl CompilationManager {
     pub fn new(args: Arc<RunArgs>) -> Self {
         Self {
@@ -45,6 +51,10 @@ impl CompilationManager {
             cancellation_token: CancellationToken::new(),
             compilations: Default::default(),
         }
+    }
+
+    pub async fn status(&self, solver_name: &str) -> CompilationStatus {
+        todo!()
     }
 
     pub async fn start(&self, solver_name: String) {
