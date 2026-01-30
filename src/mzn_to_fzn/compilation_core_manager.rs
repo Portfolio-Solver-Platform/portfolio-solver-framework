@@ -12,12 +12,45 @@ use std::{
     sync::Arc,
 };
 
-// TODO: Find better name
+// TODO: Find better name (remember to replace file name as well)
 pub struct CompilationCoreManager {
     manager: Arc<CompilationManager>,
     queue: Arc<RwLock<CompilationPriority>>,
 }
 
+// New way of keeping track:
+//
+// General idea is to keep track of available extra compilations in CompilationPriority.
+//
+// register_main_compilation(solver, cores)
+// take_next_extra_compilation() -> solver
+// Whenever an extra compilation or main compilation is done, it should
+// run a common function that keeps calling take_next_extra_compilation() and starting it.
+// This common function should perhaps also be called right after registering a main compilation.
+// This is because register_main_compilation will let CompilationPriority register
+// that new extra compilations can be performed.
+//
+// take_next_extra_compilation() should register the extra compilation as being run,
+// such that subsequent executions of the function doesn't return the same compilation.
+// There should also be a "compilation_stopped(solver)" that allows you to register
+// that a compilation stopped, and there should be "compilation_finished(solver)" to
+// register that a compilation finished. Note that "stopped" here means it finished
+// before being finished.
+//
+// Note that when registering main compilation, it should check whether it is
+// in the queue of upcoming compilations, as well as checking if it is already
+// being compiled as an extra compilation.
+// If the compilation is already registered as a main compilation, then also
+// make sure that the cores are the same. If they are not, and the new cores are smaller,
+// then stop as many extra compilations as the difference, or if there now are more cores,
+// then instead start more extra compilations.
+//
+// Important things to handle:
+// - The same main compilation being started multiple times, and with different cores.
+// - Main compilation being started, but it is already running as an extra compilation.
+
+//
+//
 // General procedure:
 //
 // Create a CompilationPriority struct that manages which compilation
@@ -36,6 +69,7 @@ pub struct CompilationCoreManager {
 // TODO: Handle main compilations should not be able to be stopped.
 //       Currently, they can be stopped when another main compilation is finished, and it has low
 //       priority.
+//       - Should be handled by registering it as a main compilation.
 impl CompilationCoreManager {
     pub fn new(args: Arc<RunArgs>, compilation_priorities: Vec<String>) -> Self {
         let queue = CompilationPriority::from_vec(compilation_priorities);
@@ -48,6 +82,7 @@ impl CompilationCoreManager {
     pub async fn start(&self, solver_id: String, cores: u64) {
         match self.manager.status(&solver_id).await {
             // Ignore compilations that are done or running
+            // TODO: What should happen if the cores are different but the solver is the same?
             CompilationStatus::Done | CompilationStatus::Running => {
                 logging::info!(
                     "did not start the compilation of solver '{solver_id}' because it was already done or running",
@@ -154,6 +189,7 @@ struct SolverId(String);
 #[derive(PartialOrd, PartialEq, Eq, Ord)]
 struct Priority(u64);
 
+/// Not thread-safe
 struct CompilationPriority {
     to_start_queue: BTreeMap<Priority, SolverId>,
     running: HashMap<SolverId, Priority>,
