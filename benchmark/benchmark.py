@@ -59,7 +59,7 @@ PROBLEMS = [
 ]
 
 
-SOLVERS = ["cp-sat", "gecode", "chuffed", "huub", "cplex", "choco", "picat"]
+SOLVERS = ["fzn-cp-sat", "fzn-gecode", "fzn-chuffed", "fzn-huub", "cplex", "choco", "fzn-choco.sh", "picat", "fzn-picat", "java", "minizinc"]
 
 
 def kill_solvers():
